@@ -6,6 +6,8 @@ Conf2024, [project_page], [paper].
 The framework of our codes is based on the work ([sriyash421/Pred2Nav](https://github.com/sriyash421/Pred2Nav)),
 and the codes for CADRL are based on the work ([vita-epfl/CrowdNav](https://github.com/vita-epfl/CrowdNav)). 
 
+For the codes used in the real-robot experiment, please see `maru_exp` branch of this repository.
+
 <br>
 
 ## Tested Environment
