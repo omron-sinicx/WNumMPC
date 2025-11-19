@@ -6,8 +6,8 @@ Conf2024, [project_page], [paper].
 The framework of our codes is based on the work ([sriyash421/Pred2Nav](https://github.com/sriyash421/Pred2Nav)),
 and the codes for CADRL are based on the work ([vita-epfl/CrowdNav](https://github.com/vita-epfl/CrowdNav)). 
 
-This `maru_exp` branch contains the codes for the real-robot experiment.
-For the codes used in the holonomic simulation experiment, please see `main` branch of this repository.
+This `maru_exp` branch contains the code for the real-robot experiment.
+For the code used in the holonomic simulation experiment, please see `main` branch of this repository.
 
 
 <br>
