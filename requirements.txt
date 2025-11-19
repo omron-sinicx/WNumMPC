@@ -1,0 +1,18 @@
+numpy<2.0.0
+pandas == 2.2.2
+torch == 2.3.0
+gym
+tensorflow == 2.16.1
+matplotlib
+Cython
+tqdm
+omegaconf
+hydra-core
+plotly
+optuna
+kaleido
+tensordict == 0.4.0
+torchrl == 0.4.0
+multiprocess
+torchsummary
+# Python-RVO2 (pip install git+)

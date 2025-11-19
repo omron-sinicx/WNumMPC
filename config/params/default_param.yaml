@@ -1,0 +1,21 @@
+dt: 0.1
+prediction_horizon: 1.0
+history_length: 1
+log_cost: False
+viz_percent: False
+
+obs_plot: False
+plot_cost_data: False
+
+# the parameters of action space
+action:  # the number of actions is n_actions * n_velocity
+  span: 360  # degree
+  n_actions: 16  # angle num
+  max_v_ratio: 1.0  # v_max / v_pref
+  n_velocity: 5  # velocity num
+
+
+defaults:
+  - _self_
+  - mpc_param: mean_mpc_H4  # config.MPC.params.mpc_param
+  - training_param: default  # config.MPC.params.training_param

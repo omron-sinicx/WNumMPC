@@ -1,0 +1,42 @@
+sim:
+  human_num: 8  # the number of all agents = (human_num+1)
+  robot_policy: "wnum_mpc"  # orca / wnum_mpc / cadrl / vanilla_mpc / mean_mpc (T-MPC)
+  position:
+    circle:
+      r: 2.0  # for creating a circle scenario (radius)
+    rectangle:
+      w: 4.0  # disable
+  time_limit: 20.0  # time limit for each episode
+  done_if_all_agents_reached: True  # False if train CADRL
+
+eval_episodes: 100 # episodes for evaluation (30 is set when training)
+
+plot_trajectory: False
+plot_weight: False  # plot_trajectoryにweightも含むか否か
+plot_animation: False
+plot_dir: ./plot_data/wnum_mpc8_gen/
+
+# gen: random, opp: crossing
+## optunaを使う時はコメントアウトして下さい。
+eval_states: ./datas/eval_states/8-100-gen.npy
+#result_file: ./datas/eval_results/8-100-wnum-gen.json
+
+#eval_states: ./datas/eval_states/8-100-opp.npy
+#result_file: ./datas/eval_results/8-100-wnum-opp.json
+
+# for optimization of hyperparameters
+use_optuna: True
+multi_thread: True
+optuna_trials: 32
+
+
+# for CADRL
+cadrl:
+  mlp_dims: [256, 256, 256, 1]
+  multiagent_training: true
+
+
+defaults:
+  - _self_
+  - params: default_param  # config.MPC.params
+  - cadrl_param: default  # config for CADRL

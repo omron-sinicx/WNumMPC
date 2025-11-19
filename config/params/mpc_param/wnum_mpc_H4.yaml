@@ -1,0 +1,24 @@
+cost:
+  discrete_cost_type: winding
+  q:
+    dev: 1.0
+    goal: 2.9856042293936924
+    obs: 13.583360015606939
+    wind: 0.0
+  q_select:
+    goal: 9.226062987340372
+    obs: 13.231894515845443
+    wind: 100.0
+  sigma:
+    h: 0.5
+    r: 0.3
+    s: 0.35
+
+randomize_select_step: true
+select_span: 5
+set_target_winding_num: true
+split_num: 3
+
+defaults:
+  - _self_
+  - use_nn: no_use

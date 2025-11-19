@@ -1,0 +1,21 @@
+nn_param:  # param for neural network
+  hidden_size: 32
+
+reward_param:  # param for reward function
+  rew_lambda: 0.0
+  rew_gamma: 0.99
+
+ppo_param:
+  n_iter: 20000
+  num_epoch: 4
+  clip_epsilon: 0.1
+  gamma: 0.95
+  lmbda: 0.9
+  max_grad_norm: 0.5
+
+  batch_size: 1024
+  learning_rate: 4e-4
+  entropy_eps: 1e-3
+
+defaults:
+  - _self_

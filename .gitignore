@@ -1,0 +1,14 @@
+.idea/
+*.pyc 
+**/__pycache__
+
+cluster_data*/
+test*/
+venv
+
+plot_data
+datas/*
+!datas/eval_results
+!datas/eval_states
+models/*/*/*
+!models/*/*/best.pth
