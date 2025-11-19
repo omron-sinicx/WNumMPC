@@ -1,0 +1,3 @@
+[submodule "maru"]
+	path = maru
+	url = git@github.com:omron-sinicx/maru.git
