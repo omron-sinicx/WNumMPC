@@ -24,7 +24,8 @@ class Agent(object):
         self.sensor = subconfig.sensor
         self.FOV = np.pi * subconfig.FOV
         # for humans: we only have holonomic kinematics; for robot: depend on config
-        self.kinematics = 'holonomic' if section == 'humans' else config.action_space.kinematics
+        #self.kinematics = 'holonomic' if section == 'humans' else config.action_space.kinematics
+        self.kinematics = config.action_space.kinematics
         self.id: int = agent_id
         self.px = None
         self.py = None
@@ -37,6 +38,8 @@ class Agent(object):
         self.theta = None
         self.time_step = config.env.time_step
         self.policy.time_step = config.env.time_step
+
+        self.goal_threshold = config.policy_config.goal_threshold
 
     def print_info(self):
         logging.info('Agent is {} and has {} kinematic constraint'.format(
@@ -123,6 +126,9 @@ class Agent(object):
     def get_goal_position(self):
         return self.gx, self.gy
 
+    def set_goal_position(self, gx, gy):
+        self.gx, self.gy = gx, gy
+
     def get_velocity(self):
         return self.vx, self.vy
 
@@ -152,21 +158,21 @@ class Agent(object):
         # unicycle
         else:
             # naive dynamics
-            # theta = self.theta + action.r * delta_t # if action.r is w
-            # # theta = self.theta + action.r # if action.r is delta theta
-            # px = self.px + np.cos(theta) * action.v * delta_t
-            # py = self.py + np.sin(theta) * action.v * delta_t
+            theta = self.theta + action.r * delta_t / 2 # if action.r is w
+            # theta = self.theta + action.r # if action.r is delta theta
+            px = self.px + np.cos(theta) * action.v * delta_t
+            py = self.py + np.sin(theta) * action.v * delta_t
 
             # differential drive
-            epsilon = 0.0001
-            if abs(action.r) < epsilon:
-                R = 0
-            else:
-                w = action.r / delta_t  # action.r is delta theta
-                R = action.v / w
+            # epsilon = 0.0001
+            # if abs(action.r) < epsilon:
+            #     R = 0
+            # else:
+            #     w = action.r / delta_t  # action.r is delta theta
+            #     R = action.v / w
 
-            px = self.px - R * np.sin(self.theta) + R * np.sin(self.theta + action.r)
-            py = self.py + R * np.cos(self.theta) - R * np.cos(self.theta + action.r)
+            # px = self.px - R * np.sin(self.theta) + R * np.sin(self.theta + action.r)
+            # py = self.py + R * np.cos(self.theta) - R * np.cos(self.theta + action.r)
 
         return px, py
 
@@ -182,15 +188,18 @@ class Agent(object):
             self.vx = action.vx
             self.vy = action.vy
         else:
-            self.theta = (self.theta + action.r) % (2 * np.pi)
+            # self.theta = (self.theta + action.r) % (2 * np.pi) # if action.r is delta theta
+            self.theta = (self.theta + action.r * delta_t) % (2 * np.pi) # if action.r is w
             self.vx = action.v * np.cos(self.theta)
             self.vy = action.v * np.sin(self.theta)
 
     def reached_destination(self):
-        return norm(np.array(self.get_position()) - np.array(self.get_goal_position())) < self.radius
+        return norm(np.array(self.get_position()) - np.array(self.get_goal_position())) < self.goal_threshold * self.radius
 
 
-def dist_agents(agent1: Agent, agent2: Agent) -> float:
-    dx = agent1.px - agent2.px
-    dy = agent1.py - agent2.py
+def dist_agents(agent1, agent2) -> float:
+    px1, py1 = agent1.get_position()
+    px2, py2 = agent2.get_position()
+    dx = px1 - px2
+    dy = py1 - py2
     return math.sqrt(dx * dx + dy * dy)

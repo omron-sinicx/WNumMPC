@@ -30,15 +30,12 @@ pip install git+https://github.com/sybrenstuvel/Python-RVO2.git  # for ORCA
 
 ## Getting started
 if you want to run other policy, you can change the robot_policy in the config/experiment_param.yaml file.
-- available policies: ORCA, CADRL, VanillaMPC, MeanMPC (T-MPC), WNumMPC (proposed method),
+- available policies: VanillaMPC, MeanMPC (T-MPC), WNumMPC (proposed method),
   - default: WNumMPC
-- Agent Counts: 3, 5, 7, 9
-  - default: 9
-- Placement Generation: random (gen), crossing (opp)
 
-As a specific rule of placement:
-if Agent count = 9 and placement generation = gen, 
-set eval_states: ./datas/eval_states/8-100-gen.npy.
+Whether you run the policy with real maru robots or in the simulate environment is determined `use_maru` (default: False) in the config/experiment_param.yaml file.
+
+If you use the real maru robots, the serial ports for connecting maru cradles must be specified with `serial_port` (default: ["/dev/ttyUSB0", "/dev/ttyUSB1"]) in config/config.py file.
 
 <br>
 
@@ -79,6 +76,9 @@ TODO
     - experiment_param.yamlのrobot_policy = CADRLにしてから実行
 
 
+- maru (submodule)
+  - maruを動かすためのコード
+
 - config
   - config/experiment_param.yaml: envの設定ファイル
     - 方策やAgent数を変更出来る (H: humanの人数(全体のAgent数はH+1), robot_policy: 方策)
@@ -90,14 +90,3 @@ TODO
   - crowd_nav/policy/wnum_mpc.py: WnumMPCのラッパー
   - crowd_nav/policy/wnum_mpc_utils/cv_predictor.py: WnumMPCのコストや入力計算の実装
   - crowd_nav/policy/wnum_mpc_utils/nn_module.py: WnumMPCのNNの実装
-
-    
-- CADRL
-  - crowd_nav/policy/cadrl.py: CADRLの実装
-  - crowd_nav/policy/cadrl_utils/以下: CADRLで使う物の実装
-
-
-- ORCA
-  - crowd_nav/policy/orca.py: ORCAのラッパー
-  - 本体: Python-RVO2
-

@@ -25,7 +25,6 @@ def eval_policy(dict_config: DictConfig, visualize: bool, network_path: str | No
     if network_path is not None:
         if isinstance(env.robot.policy, CADRL):
             env.robot.policy.model.load_state_dict(torch.load(network_path))
-            env.robot.policy.set_device('cuda:0')
             env.sync_policy_setting()
         elif isinstance(env.robot.policy, WNumMPC):
             env.robot.policy.model_predictor.wnum_selector.model.load_state_dict(torch.load(network_path))
@@ -36,8 +35,7 @@ def eval_policy(dict_config: DictConfig, visualize: bool, network_path: str | No
         with set_exploration_type(ExplorationType.MODE), torch.no_grad():
             result: dict = trial(env, episode_num=episode_num, print_info=True, visualize=visualize)
     else:
-        with torch.no_grad():
-            result: dict = trial(env, episode_num=episode_num, print_info=True, visualize=visualize)
+        result: dict = trial(env, episode_num=episode_num, print_info=True, visualize=visualize)
 
     #env.reset()
     print_result(result)
@@ -47,24 +45,26 @@ def eval_policy(dict_config: DictConfig, visualize: bool, network_path: str | No
 if __name__ == '__main__':
     policy_setting, human_num = get_setting()
     if policy_setting == "cadrl":  # CADRL
-        network_path: str = "./models/CADRL/human_{}/rl_model_best.pth".format(human_num)
+        network_path: str = "./models/CADRL/rl_model.pth"
         d_conf: DictConfig = load_cadrl_config(cadrl_param_name="default")
 
-    elif policy_setting == "vanilla_mpc" or policy_setting == "orca":  # Vanilla MPC or ORCA
+    elif policy_setting == "vanilla_mpc":  # Vanilla MPC
         network_path: str | None = None
-        mpc_param: str = "vanilla_mpc_H{}".format(human_num)
+        mpc_param: str = "rot_real_vanilla_mpc_H{}".format(human_num)
         d_conf: DictConfig = load_wmpc_config(mpc_param_name=mpc_param, training_param="default", use_nn="no_use")
 
-    elif policy_setting == "mean_mpc":  # T-MPC
+    elif policy_setting == "mean_mpc":  # Mean MPC
         network_path: str | None = None
-        mpc_param: str = "mean_mpc_H{}".format(human_num)
+        mpc_param: str = "rot_real_mean_mpc_H{}".format(human_num)
         d_conf: DictConfig = load_wmpc_config(mpc_param_name=mpc_param, training_param="default", use_nn="no_use")
 
-    else:  # WNumMPC
-        split_num = 5 if human_num <= 4 else 3
-        mpc_param: str = "wnum_mpc_H{}".format(human_num)
+    else:  # WNumMPC or ORCA
+        # WNumMPC
+        split_num = 5 if human_num <= 4 else 3   
+        mpc_param: str = "rot_real_wnum_mpc_H{}".format(human_num)
         training_param = "h32" if human_num <= 4 else "h64"
-        network_path: str = "./models/ww_human_{}/WNumPPO_{}_mean/best.pth".format(human_num, training_param)
+        #network_path: str = "./models/ww_human_{}/WNumPPO_{}_mean/best.pth".format(human_num, training_param)
+        network_path: str = "./models/ww_human_{}/WNumPPO_{}/best.pth".format(human_num, training_param)
 
         use_nn: str = "no_use" if network_path is None else "use"
         d_conf: DictConfig = load_wmpc_config(mpc_param_name=mpc_param, training_param=training_param, use_nn=use_nn)

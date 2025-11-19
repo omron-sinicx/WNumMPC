@@ -46,6 +46,24 @@ class WNumNetworkActor(nn.Module):
         return self.model(x)
 
 
+class WNumNetworkActor(nn.Module):
+    def __init__(self, input_size, hidden_size: int, out_size: int) -> None:
+        super().__init__()
+        self.model: nn.Module = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, hidden_size * 2),
+            nn.Tanh(),
+            nn.Linear(hidden_size*2, hidden_size),
+            nn.Tanh(),
+            nn.Linear(hidden_size, 2 * out_size),
+            NormalParamExtractor(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+
 class WNumNNSelector:
     def __init__(self, training_param: DictConfig, input_size: int, out_size: int, human_num: int) -> None:
         self.nn_param: DictConfig = training_param.nn_param
@@ -88,4 +106,3 @@ class WNumNNSelector:
         log_probs: torch.Tensor = w_num_dist["sample_log_prob"].detach()
         w_num_id = None
         return w_num, w_num_id, log_probs
-

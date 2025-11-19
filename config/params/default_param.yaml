@@ -6,14 +6,16 @@ viz_percent: False
 
 obs_plot: False
 plot_cost_data: False
+save_cost_data: False
 
 # the parameters of action space
-action:  # the number of actions is n_actions * n_velocity
+action:  # the number of actions is n_actions * n_velocity if type is ActionXY and n_velocity ^ 2 if type is ActionRot
+  type: ActionRot
   span: 360  # degree
   n_actions: 16  # angle num
   max_v_ratio: 1.0  # v_max / v_pref
-  n_velocity: 5  # velocity num
-
+  #n_velocity: 9  # velocity num
+  speed_cands: [-1.0, -0.9, -0.8, -0.7, 0., 0.7, 0.8, 0.9, 1.0]  # speed_cands
 
 defaults:
   - _self_

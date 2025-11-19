@@ -29,6 +29,11 @@ def f_trial(config: NavConfig, network_path : str) -> dict:
 
 
 def objective(nav_config: NavConfig, optuna_trial: optuna.Trial, network_path : str) -> float:
+    #q_obs = optuna_trial.suggest_float('q_obs', 0.0, 20.0)  # xの範囲指定
+    #q_goal = optuna_trial.suggest_float('q_goal', 0.0, 20.0)  # yの範囲指定
+    #nav_config.policy_config["params"]["mpc_param"]['cost']['q']['obs'] = q_obs
+    #nav_config.policy_config["params"]["mpc_param"]['cost']['q']['goal'] = q_goal
+
     if nav_config.policy_config.params.mpc_param.set_target_winding_num:
         q_goal_s = optuna_trial.suggest_float('q_goal_s', 0.0, 20.0)  # yの範囲指定
         q_obs_s = optuna_trial.suggest_float('q_obs_s', 0.0, 20.0)  # yの範囲指定
@@ -120,7 +125,7 @@ if __name__ == '__main__':
     _, human_num = get_setting()
     training_param = "h32" if human_num <= 4 else "h64"
     #network_path: str = "./models/human_{}/WNumPPO_{}_mean/best.pth".format(human_num, training_param)
-    network_path: str = "./models/ww_human_{}/WNumPPO_{}_mean/best.pth".format(human_num, training_param)
-    mpc_param: str = "wnum_mpc_H{}".format(human_num)
+    mpc_param: str = "rot_real_wnum_mpc_H{}_slow_angle".format(human_num)
+    network_path: str = "./models/ww_human_{}/WNumPPO_{}_slow_angle/final.pth".format(human_num, training_param)
     optimize_param(mpc_param, training_param, network_path)
 

@@ -23,7 +23,7 @@ class Trainer(object):
         logging.info('Current learning rate: %f', learning_rate)
         self.optimizer = optim.SGD(self.model.parameters(), lr=learning_rate, momentum=0.9)
 
-    def optimize_epoch(self, num_epochs, writer = None):
+    def optimize_epoch(self, num_epochs):
         if self.optimizer is None:
             raise ValueError('Learning rate is not set!')
         if self.data_loader is None:
@@ -33,8 +33,8 @@ class Trainer(object):
             epoch_loss = 0
             for data in self.data_loader:
                 inputs, values = data
-                inputs = Variable(inputs).to(self.device)
-                values = Variable(values).to(self.device)
+                inputs = Variable(inputs)
+                values = Variable(values)
 
                 self.optimizer.zero_grad()
                 outputs = self.model(inputs)
@@ -49,8 +49,6 @@ class Trainer(object):
 
             average_epoch_loss = epoch_loss / len(self.memory)
             logging.debug('Average loss in epoch %d: %.2E', epoch, average_epoch_loss)
-            if writer != None:
-                writer.add_scalar("imitation_loss", average_epoch_loss, epoch)
 
         return average_epoch_loss
 
@@ -62,8 +60,8 @@ class Trainer(object):
         losses = 0
         for _ in range(num_batches):
             inputs, values = next(iter(self.data_loader))
-            inputs = Variable(inputs).to(self.device)  # n x H x 13
-            values = Variable(values).to(self.device)  # n x 1
+            inputs = Variable(inputs)  # n x H x 13
+            values = Variable(values)  # n x 1
 
             self.optimizer.zero_grad()
             outputs = self.model(inputs)  # n x H x 1

@@ -14,8 +14,8 @@ ppo_param:
   lmbda: 0.9
 
   batch_size: 4096
-  learning_rate: 2e-4
-  entropy_eps: 3e-3
+  learning_rate: 1e-4
+  entropy_eps: 8e-4
 
 defaults:
   - _self_

@@ -48,7 +48,6 @@ class Explorer(object):
             while not done:
                 action = self.env.robot.act(ob)
                 ob, reward, terminated, truncated, info = self.env.step(action)
-                assert reward != None
                 done = terminated or truncated
                 states.append(self.env.robot.policy.last_state)
                 actions.append(action)
@@ -123,7 +122,7 @@ class Explorer(object):
                     # terminal state
                     value = reward
                 else:
-                    next_state = states[i + 1].to(self.device)
+                    next_state = states[i + 1]
                     gamma_bar = pow(self.gamma, self.env.robot.time_step * self.env.robot.v_pref)
                     value = reward + gamma_bar * self.target_model(next_state[0].unsqueeze(0)).data.item()
             value = torch.Tensor([value]).to(self.device)

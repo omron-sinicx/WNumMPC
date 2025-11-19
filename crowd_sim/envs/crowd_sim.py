@@ -10,6 +10,7 @@ from crowd_sim.envs.utils.agent import Agent
 from crowd_sim.envs.utils.human import Human
 from crowd_sim.envs.utils.robot import Robot
 from crowd_sim.envs.utils.ballbot import BallBot
+from crowd_sim.envs.utils.maru_agent import MaruAgent
 from crowd_sim.envs.utils.info import *
 from crowd_nav.policy.orca import ORCA
 from crowd_sim.envs.utils.state import *
@@ -23,7 +24,14 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib import patches
 import os
+import atexit
+from time import time, sleep
 
+from maru.software.control.python.maru import osx001Driver
+
+def flush(driver):
+    driver.flush_buffer()
+    print("flush!!")
 
 class CrowdSim(gym.Env):
     def __init__(self, seed: int, n_env: int = 0):
@@ -35,7 +43,7 @@ class CrowdSim(gym.Env):
         """
         self.time_limit = None
         self.time_step = None
-        self.robot: Robot | BallBot = None  # a Robot instance representing the robot
+        self.robot: Robot | BallBot | MaruAgent = None  # a Robot instance representing the robot
         self.humans = None  # a list of Human instances, representing all humans in the environment
         self.global_time = None
 
@@ -79,7 +87,7 @@ class CrowdSim(gym.Env):
         # for render
         self.render_axis = None
 
-        self.humans: list[Human] | list[BallBot] = []
+        self.humans: list[Human] | list[BallBot] | list[MaruAgent] = []
 
         self.storage: bool = False
         self.logger: Logger = None
@@ -87,6 +95,24 @@ class CrowdSim(gym.Env):
         self._extra_time_to_goals: list[float | None] = []  # 各Agentのgoalまでの余分な時間のリスト
         self.trajectory: list[list[FullState]] = None  # 各Agentの軌跡のリスト
 
+    def getStatusFromDrivers(self):
+        rs = [{}] * len(self.drivers)
+        current = time()
+        while True:
+            for driver_id, driver in enumerate(self.drivers):
+                res = driver.get_id_position()
+                if len(res) >= len(rs[driver_id]):
+                    rs[driver_id] = res
+            if sum([len(r) for r in rs]) >= self.human_num + 1:
+                break
+            if time() - current > 10 * self.time_step * self.config.time_scale:
+                print("connection failed!")
+                exit(1)
+        result = {}
+        for r in rs:
+            result.update(r)
+        return result
+    
     def configure(self, config: Config, buffer: list | None = None) -> None:
         self.config: Config = config
         if self.config.humans.policy in ["wnum_mpc", "vanilla_mpc", "mean_mpc"]:
@@ -103,6 +129,8 @@ class CrowdSim(gym.Env):
 
         if self.config.humans.policy in ["orca", "social_force", "wnum_mpc", "cadrl", "vanilla_mpc", "mean_mpc"]:
             self.circle_radius = config.sim.circle_radius
+            self.circle_radius_x = config.sim.circle_radius_x
+            self.circle_radius_y = config.sim.circle_radius_y
             self.human_num = config.sim.human_num
 
         else:
@@ -137,26 +165,42 @@ class CrowdSim(gym.Env):
 
         self.last_human_states = np.zeros((self.human_num, 5))
 
+        self.episode_counter: int = 0
+        
         # set robot for this envs
-        if config.action_space.kinematics == "ballbot":
+        config.use_maru = config.policy_config.use_maru
+        if config.use_maru:
+            self.drivers = []
+            for serial_port in config.serial_port:
+                driver = osx001Driver(serial_port)
+                atexit.register(flush, driver)
+                self.drivers.append(driver)
+            ids = [[]] * len(self.drivers)
+            while True:
+                for driver_id, driver in enumerate(self.drivers):
+                    res = list(driver.get_id_position().keys())
+                    if len(res) >= len(ids[driver_id]):
+                        ids[driver_id] = res
+                if sum([len(l) for l in ids]) >= self.human_num + 1:
+                    break
+            composed_ids = sorted(sum([[(i, id) for id in ids[i]] for i in range(len(ids))], []))
+            self.driver_ids = [p[0] for p in composed_ids]
+            self.target_ids = [p[1] for p in composed_ids]
+            #self.episode_counter = config.policy_config.episode_starts
+
+            self.collision_radius = config.policy_config.collision_radius
+            
+            rob_RL = MaruAgent(config, 'robot', 0, self.drivers[self.driver_ids[0]], self.target_ids)
+        elif config.action_space.kinematics == "ballbot" or config.action_space.kinematics == "diff_wheel":
             rob_RL: BallBot = BallBot(config, 'robot', 0)
         else:
             rob_RL: Robot = Robot(config, 'robot', 0)
 
         if hasattr(config.policy_config, "eval_states"):
             self.eval_states = np.load(config.policy_config.eval_states)
-        if hasattr(config.policy_config, "only_symmetric_instances"):
-            self.only_symmetric_instances = config.policy_config.only_symmetric_instances
-        else:
-            self.only_symmetric_instances = False
-        if hasattr(config.policy_config, "alternative_symmetric_instances"):
-            self.alternative_symmetric_instances = config.policy_config.alternative_symmetric_instances
-        else:
-            self.alternative_symmetric_instances = False
 
         self.set_robot(rob_RL)
         self.step_counter: int = 0
-        self.episode_counter: int = 0
 
         # logger
         if self.config.humans.policy in ["wnum_mpc", "vanilla_mpc", "mean_mpc"]:
@@ -166,9 +210,13 @@ class CrowdSim(gym.Env):
         self.rb: [] = buffer
         self.rb = [[] for _ in range(self.human_num + 1)]
         self.plot_trajectory: bool = self.config.policy_config["plot_trajectory"]
-        self.plot_weight: bool = self.config.policy_config["plot_weight"]
-        self.plot_dir: str = self.config.policy_config["plot_dir"]
         self.plot_animation: bool = self.config.policy_config["plot_animation"]
+        if self.plot_animation:
+            self.animation_dir = self.config.policy_config["animation_dir"]
+        self.save_trajectory: bool = self.config.policy_config["save_trajectory"]
+        if self.save_trajectory:
+            self.trajectory_dir = self.config.policy_config["trajectory_dir"]
+            self.saved_trajectories = []
         self._global_obs_pre = [self.generate_global_ob() for _ in range(self.human_num + 1)]
         self._extra_time_to_goals = [None for _ in range(self.human_num + 1)]
 
@@ -195,31 +243,42 @@ class CrowdSim(gym.Env):
         for i in range(human_num):
             self.humans.append(self.generate_circle_crossing_human(i + 1))
 
-    def generate_circle_crossing_human(self, agent_id: int) -> Human | BallBot:
+    def generate_circle_crossing_human(self, agent_id: int) -> Human | BallBot | MaruAgent:
         if self.config.humans.policy in ["wnum_mpc", "vanilla_mpc", "mean_mpc"]:  # wnum_mpcの場合はballbotを使用
             tmp = self.config.policy_config['params']["obs_plot"]
             tmp2 = self.config.policy_config['params']["plot_cost_data"]
             self.config.policy_config['params']["obs_plot"] = False
             self.config.policy_config['params']["plot_cost_data"] = False
-            human: BallBot = BallBot(self.config, 'humans', agent_id)
+            if self.config.use_maru:
+                human = MaruAgent(self.config, 'humans', agent_id, self.drivers[self.driver_ids[agent_id]], self.target_ids)
+            else:
+                human: BallBot = BallBot(self.config, 'humans', agent_id)
             self.config.policy_config['params']["obs_plot"] = tmp
             self.config.policy_config['params']["plot_cost_data"] = tmp2
         else:
             human: Human = Human(self.config, 'humans', agent_id)
 
-        if hasattr(self, "eval_states"):
-            sx, sy = self.eval_states[self.episode_counter][0][human.id]
-            gx, gy = self.eval_states[self.episode_counter][1][human.id]
-            human.set(sx, sy, gx, gy, 0, 0, math.atan2(gy-sy, gx-sx))
+        if self.config.use_maru:
+            gx, gy = self.eval_states[self.episode_counter][human.id]
+            human.set_goal_position(gx, gy)
+        elif hasattr(self, "eval_states"):
+            if self.eval_states.ndim == 4:
+                sx, sy = self.eval_states[self.episode_counter][0][human.id]
+                gx, gy = self.eval_states[self.episode_counter][1][human.id]
+            else:
+                sx, sy = self.eval_states[self.episode_counter][human.id]
+                gx, gy = self.eval_states[self.episode_counter+1][human.id]
+            human.set(sx, sy, gx, gy, 0, 0, math.atan2(gy-sy, gx-sx))            
         else:
+            ct = 0
             while True:
                 angle = self._rng.random() * np.pi * 2
                 # add some noise to simulate all the possible cases robot could meet with human
                 v_pref = 1.0 if human.v_pref == 0 else human.v_pref
                 px_noise = (self._rng.random() - 0.5) * v_pref
                 py_noise = (self._rng.random() - 0.5) * v_pref
-                px = self.circle_radius * np.cos(angle) + px_noise
-                py = self.circle_radius * np.sin(angle) + py_noise
+                px = self.circle_radius_x * np.cos(angle) + px_noise
+                py = self.circle_radius_y * np.sin(angle) + py_noise
                 collide = False
     
                 for i, agent in enumerate([self.robot] + self.humans):
@@ -227,17 +286,18 @@ class CrowdSim(gym.Env):
                     if self.robot.kinematics == 'unicycle' and i == 0:
                         min_dist = self.circle_radius / 2  # Todo: if circle_radius <= 4, it will get stuck here
                     else:
-                        min_dist = human.radius + agent.radius + agent.radius * 4
+                        min_dist = self.config.sim.min_dist
                     if norm((px + agent.gx, py + agent.gy)) < min_dist:
                         collide = True
                         break
                 if not collide:
                     break
+                ct+=1
     
-            if self.episode_counter == 0 or self.only_symmetric_instances or (self.episode_counter % 2 == 0 and self.alternative_symmetric_instances):
-                human.set(px, py, -px, -py, 0, 0, math.atan2(- py, - px))
+            if self.episode_counter == 0:
+                human.set(px, py, -px, -py, 0, 0, math.atan2(-py, -px))
             else:
-                human.set(self.last_gx[human.id], self.last_gy[human.id], -px, -py, 0, 0, math.atan2(-py, -px))
+                human.set(self.last_gx[agent_id], self.last_gy[agent_id], -px, -py, 0, 0, math.atan2(-py, -px))
         return human
 
     # add noise according to env.config to state
@@ -318,18 +378,31 @@ class CrowdSim(gym.Env):
                 self.robot.set(px, py, gx, gy, 0, 0, self._rng.uniform(0, 2 * np.pi))  # randomize init orientation
 
             # randomize starting position and goal position
+            elif self.config.use_maru:
+                gx, gy = self.eval_states[self.episode_counter][self.robot.id]
+                self.robot.set_goal_position(gx, gy)
             elif hasattr(self, "eval_states"):
-                sx, sy = self.eval_states[self.episode_counter][0][self.robot.id]
-                gx, gy = self.eval_states[self.episode_counter][1][self.robot.id]
+                if self.eval_states.ndim == 4:
+                    sx, sy = self.eval_states[self.episode_counter][0][self.robot.id]
+                    gx, gy = self.eval_states[self.episode_counter][1][self.robot.id]
+                else:
+                    sx, sy = self.eval_states[self.episode_counter][self.robot.id]
+                    gx, gy = self.eval_states[self.episode_counter+1][self.robot.id]
                 self.robot.set(sx, sy, gx, gy, 0, 0, math.atan2(gy-sy, gx-sx))
             else:
                 while True:
                     # px, py, gx, gy = self._rng.uniform(-self.circle_radius, self.circle_radius, 4)
-                    px, py = self._rng.uniform(-self.circle_radius, self.circle_radius, 2)
+                    #px, py = self._rng.uniform(-self.circle_radius, self.circle_radius, 2)
+                    angle = self._rng.random() * np.pi * 2
+                    v_pref = 1.0 if self.robot.v_pref == 0 else self.robot.v_pref
+                    px_noise = (self._rng.random() - 0.5) * v_pref
+                    py_noise = (self._rng.random() - 0.5) * v_pref
+                    px = self.circle_radius_x * np.cos(angle) + px_noise
+                    py = self.circle_radius_y * np.sin(angle) + py_noise
                     gx, gy = -px, -py
                     if np.linalg.norm([px - gx, py - gy]) >= (self.circle_radius * 2.0 * 0.9):
                         break
-                if self.episode_counter == 0 or self.only_symmetric_instances or (self.episode_counter % 2 == 0 and self.alternative_symmetric_instances):
+                if self.episode_counter == 0:
                     self.robot.set(px, py, gx, gy, 0, 0, math.atan2(gy - py, gx - px))
                 else:
                     self.robot.set(self.last_gx[0], self.last_gy[0], -px, -py, 0, 0, math.atan2(-py, -px))
@@ -337,11 +410,25 @@ class CrowdSim(gym.Env):
             # generate humans
             self.generate_random_human_position(human_num=human_num)  # Humanの生成
 
-        self.last_gx, self.last_gy = {}, {}
-        self.last_gx[0], self.last_gy[0] = self.robot.gx, self.robot.gy
+        if self.config.use_maru:
+            self.update_robot_human_state()
+            self.robot.set_start_position()
+            for human in self.humans:
+                human.set_start_position()
+        else:
+            self.last_gx, self.last_gy = {}, {}
+            self.last_gx[0], self.last_gy[0] = self.robot.gx, self.robot.gy
+            #print(f"id={self.robot.id}, gx = {self.robot.gx}, gy={self.robot.gy}")
+            for human in self.humans:
+                self.last_gx[human.id], self.last_gy[human.id] = human.gx, human.gy
+                #print(f"id={human.id}, gx = {human.gx}, gy={human.gy}")
+
+    def update_robot_human_state(self):
+        status = self.getStatusFromDrivers()
+        self.robot.update_state(status)
         for human in self.humans:
-            self.last_gx[human.id], self.last_gy[human.id] = human.gx, human.gy
-        
+            human.update_state(status)
+
     def reset(self, phase='train', test_case=None, seed=None):
         """
         Set px, py, gx, gy, vx, vy, theta for robot and humans
@@ -378,7 +465,7 @@ class CrowdSim(gym.Env):
         self.logger.clear()
 
         if isinstance(self.robot.policy, WNumMPC):
-            self.robot.policy.reset(self._rng)
+            self.robot.policy.reset()
 
         self.sync_policy_setting()
 
@@ -389,11 +476,13 @@ class CrowdSim(gym.Env):
 
         if self.plot_animation and len(self.anim_images) != 0:
             ani = animation.ArtistAnimation(self.fig, self.anim_images, interval=40, repeat=False, blit=True)
-            os.makedirs(self.plot_dir, exist_ok=True)
-            ani.save(f'{self.plot_dir}/episode{self.episode_counter-1}.gif', writer='pillow')
+            os.makedirs(self.animation_dir, exist_ok=True)
+            ani.save(self.animation_dir + f'/episode{self.episode_counter-1}.gif', writer='pillow')
             self.fig.clf()
             self.anim_images = []
 
+        self.previous_time = None
+            
         return ob, observed_ids
 
     def sync_policy_setting(self) -> None:
@@ -404,7 +493,7 @@ class CrowdSim(gym.Env):
                     human.policy.model_predictor.wnum_selector.model = copy.deepcopy(
                         self.robot.policy.model_predictor.wnum_selector.model
                     )
-                human.policy.reset(self._rng)
+                human.policy.reset()
             elif isinstance(human.policy, CADRL):
                 human.policy.model = copy.deepcopy(self.robot.policy.model)
 
@@ -421,7 +510,9 @@ class CrowdSim(gym.Env):
         self.config.robot.policy = policy
 
         # set robot for this envs
-        if self.config.action_space.kinematics == "ballbot":
+        if self.config.use_maru:
+            rob_RL = MaruAgent(self.config, 'robot', 0, self.drivers[self.driver_ids[0]], self.target_ids)
+        elif self.config.action_space.kinematics == "ballbot":
             rob_RL: BallBot = BallBot(self.config, 'robot', 0)
         else:
             rob_RL: Robot = Robot(self.config, 'robot', 0)
@@ -494,7 +585,7 @@ class CrowdSim(gym.Env):
 
     def check_goaled(self, agents: list[Agent], agent_id: int) -> bool:
         return norm(np.array(agents[agent_id].get_position()) - np.array(agents[agent_id].get_goal_position())) < \
-            agents[agent_id].radius * 1.0
+            agents[agent_id].radius * self.config.policy_config.goal_threshold
 
     def calc_reward(self, agents: list[BallBot], agent_id: int,
                     agent_obs: list[ObservableState] = None):  # for w-num mpc
@@ -509,30 +600,33 @@ class CrowdSim(gym.Env):
 
         danger_dists = []
         collision = False
-        agent_dist: list[float] = [dist_agents(agents[agent_index], agent) for agent in agents]  # agent間の距離
-        if agent_obs is not None:
-            agent_dist: list[float] = [agents[agent_index].get_observable_state().dist(agent_ob) for agent_ob in
-                                       agent_obs]
 
-        for i, agent in enumerate(agents):  # calc reward
-            if i == agent_index:
-                continue
-            closest_dist: float = agent_dist[i] - agent.radius - agents[agent_index].radius  # Agent間の間隔
-            if closest_dist < self.discomfort_dist:
-                danger_dists.append(closest_dist)
-            if closest_dist < 0:  # check collision between agent[agent_id] and others
+        if (not hasattr(self.config.policy_config, "detect_collisions")) or self.config.policy_config.detect_collisions:
+        
+            agent_dist: list[float] = [dist_agents(agents[agent_index], agent) for agent in agents]  # agent間の距離
+            if agent_obs is not None:
+                agent_dist: list[float] = [agents[agent_index].get_observable_state().dist(agent_ob) for agent_ob in
+                                           agent_obs]
+    
+            for i, agent in enumerate(agents):  # calc reward
+                if i == agent_index:
+                    continue
+                closest_dist: float = agent_dist[i] - 2 * self.collision_radius if hasattr(self, "collision_radius") else  agent_dist[i] - agent.radius - agents[agent_index].radius  # Agent間の間隔
+                if closest_dist < self.discomfort_dist:
+                    danger_dists.append(closest_dist)
+                if closest_dist < 0:  # check collision between agent[agent_id] and others
+                    collision = True
+                    break
+                elif closest_dist < dmin:
+                    dmin = closest_dist
+    
+            # check collision with walls
+            px, py = agents[agent_index].get_position()
+            rad = self.collision_radius if hasattr(self, "collision_radius") else agents[agent_index].radius
+            if px < self.config.min_x + rad or self.config.max_x - rad < px \
+                or py < self.config.min_y + rad or self.config.max_y + rad < py:
                 collision = True
-                break
-            elif closest_dist < dmin:
-                dmin = closest_dist
-
-        # check collision with walls
-        px, py = agents[agent_index].get_position()
-        rad = agents[agent_index].radius
-        if px < self.config.min_x + rad or self.config.max_x - rad < px \
-           or py < self.config.min_y + rad or self.config.max_y + rad < py:
-            collision = True
-
+            
         # check if reaching the goal (agent[agent_id])
         reaching_goal = self.check_goaled(agents, agent_index)
         truncated = False  # 中断
@@ -561,8 +655,6 @@ class CrowdSim(gym.Env):
             terminated = False
             episode_info = Nothing()
 
-        assert not terminated or not isinstance(episode_info, Nothing)
-        
         if not isinstance(agents[agent_index], BallBot) or (
                 not self.robot.policy.model_predictor.set_target_winding_num):
             return reward, 0.0, terminated, truncated, 0.0, episode_info
@@ -582,38 +674,22 @@ class CrowdSim(gym.Env):
             if not isinstance(their_agent.policy, WNumMPC):
                 raise ValueError("human policy is not WNumMPC")
 
-            # wnum_id = their_agent.policy.observed_ids.index(agent_id)
-            # their_target_wnum: float = their_agent.policy.model_predictor.target.wnums[wnum_id]
-            # target_wnum: float = target_wnms["{}".format(their_agent.id)]
-            # if not their_agent.reached_destination():
-            #     rew_wnums.append(-(float(their_target_wnum - target_wnum) ** 2.0))
-            #     # rew_wnums.append(-float(abs(their_target_wnum - target_wnum)) * math.exp(-agent_dist[i]))  # old
-            # correct_wnums.append(float(abs(their_target_wnum - target_wnum) < 0.1))
-
-            if isinstance(their_agent.policy, WNumMPC) and their_agent.policy.model_predictor.target.wnums is not None:
-                their_id = their_agent.id
-                current_id = agents[agent_index].id
-
-                if current_id in their_agent.policy.observed_ids and their_id in agents[agent_index].policy.observed_ids:
-                    index_for_current = their_agent.policy.observed_ids.index(current_id)
-                    their_target_wnum = their_agent.policy.model_predictor.target.wnums[index_for_current]
-
-                    index_for_their = agents[agent_index].policy.observed_ids.index(their_id)
-                    target_wnum = agents[agent_index].policy.model_predictor.target.wnums[index_for_their]
-
-                    if not their_agent.reached_destination():
-                        rew_wnums.append(-(float(their_target_wnum - target_wnum) ** 2.0))
-                    correct_wnums.append(float(abs(their_target_wnum - target_wnum) < 0.1))
+            wnum_id = their_agent.policy.observed_ids.index(agent_id)
+            their_target_wnum: float = their_agent.policy.model_predictor.target.wnums[wnum_id]
+            target_wnum: float = target_wnms["{}".format(their_agent.id)]
+            if not their_agent.reached_destination():
+                rew_wnums.append(-float(abs(their_target_wnum - target_wnum)) * math.exp(-agent_dist[i]))
+            correct_wnums.append(float(abs(their_target_wnum - target_wnum) < 0.1))
 
         rew_wnum = rew_lambda * np.mean(rew_wnums) if len(rew_wnums) > 0 else 0.0
-        wnum_percent = np.mean(correct_wnums) if len(correct_wnums) > 0 else 1.0
+        wnum_percent = np.average(correct_wnums)
         return reward, rew_wnum, terminated, truncated, wnum_percent, episode_info
 
     # compute the observation
     def generate_ob(self, reset):
         visible_human_states, num_visible_humans, human_visibility = self.get_num_human_in_fov()
 
-        if type(self.robot) == BallBot:
+        if type(self.robot) == BallBot or type(self.robot) == MaruAgent:
             return self.get_observation_for_agent(self.robot.id)
 
         observed_ids = []  # visibleなhumanのidを格納
@@ -661,7 +737,7 @@ class CrowdSim(gym.Env):
         human_actions = []  # a list of all humans' actions
         for i, human in enumerate(self.humans):
             # observation for humans is always coordinates
-            if type(human) != BallBot:
+            if type(human) != BallBot and type(human) != MaruAgent:
                 ob, observed_ids = [], []
                 for other_human in self.humans:
                     if other_human != human:
@@ -680,12 +756,10 @@ class CrowdSim(gym.Env):
                     else:
                         ob += [self.dummy_robot.get_observable_state()]
 
-            if type(human) == BallBot:
+            else:
                 ob, observed_ids = self.get_observation_for_agent(human.id)
                 global_obs = self.generate_global_ob()
                 human_actions.append(human.act(ob, observed_ids, self.is_goaled_list))
-            else:
-                human_actions.append(human.act(ob))
         return human_actions
 
     def calc_wnum_reward(self, agent: BallBot) -> float:
@@ -696,8 +770,7 @@ class CrowdSim(gym.Env):
         rews = [log["{}".format(agent.id)]["reward"] for log in prev_logs]
         rews_wnum = [log["{}".format(agent.id)]["rew_wnum"] for log in prev_logs]
         w_rews_each_step = [rew + w_rew for rew, w_rew in zip(rews, rews_wnum)]
-        # wnum_reward = sum([rew * (rew_gamma ** i) for i, rew in enumerate(w_rews_each_step)]) / 10.0
-        wnum_reward = sum([rew * (rew_gamma ** i) for i, rew in enumerate(w_rews_each_step)])
+        wnum_reward = sum([rew * (rew_gamma ** i) for i, rew in enumerate(w_rews_each_step)]) / 10.0
         return wnum_reward
 
     def generate_global_ob(self) -> np.ndarray:
@@ -748,10 +821,29 @@ class CrowdSim(gym.Env):
         terminated_list: list[bool] = []
 
         # apply action and update all agents
+            
         for agent, tmp_action in zip([self.robot] + self.humans, [action] + human_actions):
             agent.step(tmp_action)  # step human
+        
+        if type(self.robot) is MaruAgent:
+            current = time()
+            if self.previous_time != None:
+                step_time = self.previous_time + self.time_step * self.config.time_scale
+                if current > step_time:
+                    print("time delayed!")
+                    self.previous_time = current
+                else:
+                    sleep(step_time - current)
+                    self.previous_time = step_time
+            else:
+                self.previous_time = current
+            self.update_robot_human_state()
+        for agent, tmp_action in zip([self.robot] + self.humans, [action] + human_actions):
             tmp_rew, tmp_rew_wnum, tmp_terminated, tmp_truncated, tmp_per, tmp_info \
                 = self.calc_reward([self.robot] + self.humans, agent.id)
+            if self.is_goaled_list[agent.id] and not isinstance(tmp_info, Timeout):
+                tmp_info = ReachGoal()
+                tmp_truncated = True
             terminated_list.append(tmp_terminated)
 
             if tmp_terminated and isinstance(tmp_info, Collision):  # 衝突
@@ -779,8 +871,6 @@ class CrowdSim(gym.Env):
             if isinstance(log_data["{}".format(agent.id)]["episode_info"], Collision):
                 episode_info = Collision()
                 break
-        if all(is_goaled_list_next) and isinstance(episode_info, Nothing):
-            episode_info = ReachGoal()
 
         for agent in [self.robot] + self.humans:
             self.trajectory[agent.id].append(agent.get_full_state())
@@ -841,6 +931,7 @@ class CrowdSim(gym.Env):
         else:
             terminated = is_goaled_list_next[self.robot.id] or collision_flags[self.robot.id]
         truncated = (not terminated) and (isinstance(episode_info, Timeout) or isinstance(episode_info, Collision))
+        assert not isinstance(episode_info, Nothing) or not (terminated or truncated)
 
         for agent in [self.robot] + self.humans:  # extra time to goalsの更新
             if self._extra_time_to_goals[agent.id] is None:
@@ -858,10 +949,11 @@ class CrowdSim(gym.Env):
             self.fig.tight_layout()
             self.anim_images.append(ax.get_children())
 
-        if (not self.plot_animation) and self.plot_trajectory:
-            if terminated or truncated:
-                self.plot_env_states()  # plot and save trajectories
+        if self.save_trajectory:
+            self._save_trajectory(self.trajectory)
 
+        if (not self.plot_animation) and self.plot_trajectory and (self.step_counter % 5 == 2 or terminated or truncated):
+            self.plot_env_states()  # plot and save trajectories
         self.is_goaled_list = is_goaled_list_next
 
         return ob, reward, terminated, truncated, info
@@ -879,13 +971,21 @@ class CrowdSim(gym.Env):
         # plt.ylabel('Y')
         # plt.title('episode{}:step{}'.format(self.episode_counter, self.step_counter))
         plt.tight_layout()
-        os.makedirs(self.plot_dir + f"/episode_{self.episode_counter}", exist_ok=True)
-        plt.savefig(self.plot_dir + f"/episode_{self.episode_counter}/step{self.step_counter}.png")
+        os.makedirs("./plot_data/episode_{}".format(self.episode_counter), exist_ok=True)
+        plt.savefig("./plot_data/episode_{}/step{}.png".format(self.episode_counter, self.step_counter))
         plt.close(fig)
+
+    def _save_trajectory(self, trajectorys: list[list[FullState]]) -> None:
+        trajs_np = np.array([
+            [[state.px, state.py, state.vx, state.vy, state.radius, state.gx, state.gy] for state in traj] for traj in
+            trajectorys
+        ])
+        self.saved_trajectories.append(trajs_np)
 
     def _plot_trajectory(self, ax, trajectorys: list[list[FullState]]) -> None:
         trajs_np = np.array([
-            [[state.px, state.py, state.vx, state.vy, state.radius, state.gx, state.gy] for state in traj] for traj in trajectorys
+            [[state.px, state.py, state.vx, state.vy, state.radius, state.gx, state.gy] for state in traj] for traj in
+            trajectorys
         ])
 
         for i, traj in enumerate(trajs_np):
@@ -895,43 +995,14 @@ class CrowdSim(gym.Env):
             ax.add_patch(patches.Circle((x, y), r, fill=True, color="C{}".format(i)))
             ax.add_patch(patches.Circle((x, y), r, fill=False, color="black"))
             ax.quiver(x, y, vx, vy, angles='xy', scale_units='xy', scale=1, color='r')
-
-            # Agent0から見た各Agentのtarget.wnum
-            if False:
-                predictor = self.robot.policy.model_predictor
-                if predictor.target.wnums is not None and self.robot.policy.observed_ids:
-                    try:
-                        human_obs_index = self.robot.policy.observed_ids.index(i)
-                        if human_obs_index < len(predictor.target.wnums):
-                            wnum_tmp = predictor.target.wnums[human_obs_index]
-                            ax.text(x, y + 0.2, "{:.2f}".format(wnum_tmp), fontsize=25, color='blue', ha='center')
-                    except ValueError:
-                        pass
-
-                # Agent0から見た各Agentへの重み (NN使ってる場合のみ)
-                if predictor.use_NN and (predictor.target.wnums is not None) and self.plot_weight:
-                    human_obs_index = self.robot.policy.observed_ids.index(i)
-                    weight_index = self.human_num + human_obs_index  # target.wnumsの前半がwnum、後半が重み
-                    if weight_index < len(predictor.target.wnums):
-                        raw_weight = predictor.target.wnums[weight_index]
-                        scaled_weight = 0.5 * raw_weight + 0.5
-                        ax.text(x + 0.2, y + 0.0, "w:{:.2f}".format(scaled_weight), fontsize=20, color='purple', ha='left')
-
-            # 各Agentから見たAgent0へのtarget.wnum
-            if i != 0:
-                human_agent = self.humans[i - 1]
-                if False:
-                    predictor = human_agent.policy.model_predictor
-                    if predictor.target.wnums is not None and human_agent.policy.observed_ids:
-                        try:
-                            robot_index = human_agent.policy.observed_ids.index(0)
-                            if robot_index < len(predictor.target.wnums):
-                                wnum_for_robot = predictor.target.wnums[robot_index]
-                                ax.text(x, y - 0.3, "{:.2f}".format(wnum_for_robot), fontsize=25, color='green', ha='center')
-                        except ValueError:
-                            pass
-
-            ax.text(x, y, str(i), fontsize=25, color='white', ha='center', va='center')
+            # if isinstance(self.robot.policy, WNumMPC) and i != 0:  # plot wnum
+            #     for j in range(len(self.robot.policy.observed_ids)):
+            #         if i == self.robot.policy.observed_ids[j]:
+            #             id_tmp = j
+            #             break
+            #     wnum_tmp = self.robot.policy.model_predictor.target.wnums[id_tmp]
+            #     ax.text(x, y+0.15, "{:.2f}".format(wnum_tmp), fontsize=25)
+            ax.text(x, y, str(i+1), fontsize=25)
 
     def _plot_one_trajectory(self, ax, trajectory: np.ndarray, color1):
         # 1体のtrajectoryをplot, [px, py, vx, vy, state.radius]

@@ -4,11 +4,13 @@ from omegaconf import DictConfig
 import hydra
 from crowd_sim.envs.crowd_sim import CrowdSim
 from crowd_sim.envs.utils.info import ReachGoal, Collision, Timeout, EpisodeInfo, Nothing, Danger
-from crowd_sim.envs.utils.action import ActionXY
+from crowd_sim.envs.utils.action import ActionXY, ActionRot
 from crowd_sim.envs.utils.ballbot import BallBot
+from crowd_sim.envs.utils.maru_agent import MaruAgent
 from tqdm import tqdm
-import yaml, json
-
+import yaml
+from time import time, sleep
+import os, json
 
 def load_wmpc_config(mpc_param_name: str = "set_tgt1", training_param: str = "default", use_nn: str = "no_use") -> DictConfig:
     exp_config_name = "experiment_param"
@@ -68,7 +70,7 @@ def print_episode_info(episode_info):
     elif isinstance(episode_info, Danger):
         print("Danger")
     else:
-        raise ValueError('Invalid end signal from environment: {}'.format(type(episode_info)))
+        raise ValueError('Invalid end signal from environment')
 
 
 def set_vizualize(env: CrowdSim) -> None:
@@ -119,18 +121,28 @@ def trial_single_episode(env: CrowdSim, visualize: bool = False, seed=None):
     while not done:
         if visualize:
             env.render()
-        if type(env.robot) is BallBot:
+        if type(env.robot) is BallBot or type(env.robot) is MaruAgent:
             action = env.robot.act(obs, observed_ids, env.is_goaled_list)
         else:
             action: ActionXY = env.robot.act(obs)
+        if type(env.robot) is MaruAgent and env.config.policy_config.use_maru_verbose:
+            print(f"step={env.step_counter}")
+            print(f"id={env.robot.targetId}, pos=({env.robot.px}, {env.robot.py}), action=({action.v}, {action.r})")
+            print(f"goal=({env.robot.gx}, {env.robot.gy}), vel=({env.robot.vx}, {env.robot.vy})")
+            print(f"theta={env.robot.theta}")
+            for human in env.humans:
+                print(f"id={human.targetId}, pos=({human.px}, {human.py})")
+                print(f"goal=({human.gx}, {human.gy}), vel=({human.vx}, {human.vy})")
+                #print(f"step={env.step_counter}, pos=({env.robot.px}, {env.robot.py}), action=({action.v}, {action.r})")
         obs, rew, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         observed_ids: list[int] = info["observed_ids"]
         episode_info: EpisodeInfo = info["episode_info"]
+        assert not isinstance(episode_info, Nothing) or not done
         wnum_reward: float | None = info["wnum_reward"]
         wnum_percent: float = info["wnum_percent"]
         wnum_rewards_all: list = info["wnum_reward_all"]
-
+        
         if len(wnum_rewards_all) != 0 and len(list(filter(None, wnum_rewards_all))) != 0:
             ave_w_reward += np.sum(list(filter(None, wnum_rewards_all))) / float(len(wnum_rewards_all))
         if wnum_reward is not None:
@@ -179,11 +191,65 @@ def trial(env: CrowdSim, episode_num: int, print_info: bool = False, visualize: 
         result_file = env.config.policy_config.result_file
     else:
         result_file = None
+    
+    start_k = 0
+    if env.config.use_maru:
+        if  result_file != None and os.path.isfile(result_file):
+            with open(result_file, 'r') as file:
+                result = json.load(file)
+            chc_total, path_lengths, episode_rewards, wnum_rews, w_pers, extra_time_to_goals = result['chc_total'], result['path_lengths'], result['episode_rewards'], result['wnum_rews'], result['w_pers'], result['extra_time_to_goals']
+            success_times, collision_times, timeout_times = result['success_times'], result['collision_times'], result['timeout_times']
+            collision_cases, timeout_cases = result['collision_cases'], result['timeout_cases']
+            start_k = len(chc_total)
 
-    for k in tqdm(range(episode_num), desc="[EVAL]", disable=not print_info):
+            env.episode_counter = start_k
+        
+        rews, wrews, episode_info, path, chc, global_time, w_per, all_agent_info, etg_datas\
+            = trial_single_episode(env, visualize, seed=episode_num)
+        print_episode_info(episode_info)
+        assert isinstance(episode_info, ReachGoal)
+
+        if env.save_trajectory:
+            env.saved_trajectories = []
+            
+    for k in tqdm(range(start_k, episode_num), desc="[EVAL]", disable=not print_info):
         rews, wrews, episode_info, path, chc, global_time, w_per, all_agent_info, etg_datas\
             = trial_single_episode(env, visualize, seed=k)
+
+        if env.save_trajectory and len(env.saved_trajectories) != 0:
+            os.makedirs(env.trajectory_dir, exist_ok=True)
+            np.savez(env.trajectory_dir + f'/episode{env.episode_counter-1}.npz', *env.saved_trajectories)
+            print(f'save episode{env.episode_counter-1}')
+
+            env.saved_trajectories = []
+      
+        if env.config.use_maru and not isinstance(episode_info, ReachGoal):
+            env.robot.stop()
+            for human in env.humans:
+                human.stop()
+            print_episode_info(episode_info)
+            while True:
+                res = input('Is this Failure true?[Yes/No]')
+                if res == 'Yes':
+                    break
+                elif res == 'No':
+                    exit(1)
         # for evaluation
+        if isinstance(episode_info, ReachGoal):
+            success_times.append(global_time)
+        elif isinstance(episode_info, Collision):
+            collision_cases.append(k)
+            success_times.append(np.nan)
+            collision_times.append(global_time)
+        elif isinstance(episode_info, Timeout):
+            timeout_cases.append(k)
+            success_times.append(np.nan)
+            timeout_times.append(env.time_limit)
+        else:
+            print_episode_info(episode_info)
+            raise ValueError(f'Invalid end signal from environment: {episode_info}')
+
+        
         path_lengths.append(all_agent_info["mean_path"] if any(all_agent_info) else path)
         chc_total.append(all_agent_info["mean_CHC"] if any(all_agent_info) else chc)
         wnum_rews.append(all_agent_info["ave_w_rewards_all"] if any(all_agent_info) else wrews)
@@ -193,45 +259,39 @@ def trial(env: CrowdSim, episode_num: int, print_info: bool = False, visualize: 
             extra_time_to_goals.append(etg_datas[env.robot.id])
         episode_rewards.append(rews)
         w_pers.append(w_per)
-
-        if isinstance(episode_info, ReachGoal):
-            success_times.append(global_time)
-        elif isinstance(episode_info, Collision):
-            collision_cases.append(k)
-            collision_times.append(global_time)
-            success_times.append(np.nan)
-        elif isinstance(episode_info, Timeout):
-            timeout_cases.append(k)
-            timeout_times.append(env.time_limit)
-            success_times.append(np.nan)
-        #elif isinstance(episode_info, Nothing) or isinstance(episode_info, Danger):
-        #    pass
-        else:
-            raise ValueError('Invalid end signal from environment: {}'.format(type(episode_info)))
-
-    success_rate = np.sum(~np.isnan(np.array(success_times))) / episode_num
-    collision_rate = len(collision_times) / episode_num
-    timeout_rate = len(timeout_times) / episode_num
-
-    if result_file != None:
+        
+        if env.config.use_maru and result_file != None:
+            data = locals()
+            result = {name: data[name] for name in [
+                'chc_total', 'path_lengths', 'episode_rewards', 'wnum_rews',
+                'w_pers', 'extra_time_to_goals',
+                'success_times', 'collision_times', 'timeout_times',
+                'collision_cases', 'timeout_cases']
+            }
+            with open(result_file, 'w') as file:
+                json.dump(result, file)
+            if not isinstance(episode_info, ReachGoal):
+                print(f'Failed at {len(chc_total)}') 
+                exit(1)
+    if not env.config.use_maru and result_file != None:
         data = locals()
         result = {name: data[name] for name in [
             'chc_total', 'path_lengths', 'episode_rewards', 'wnum_rews',
             'w_pers', 'extra_time_to_goals',
             'success_times', 'collision_times', 'timeout_times',
-            'collision_cases', 'timeout_cases', 'success_rate', 'collision_rate', 'timeout_rate']
+            'collision_cases', 'timeout_cases']
         }
         with open(result_file, 'w') as file:
             json.dump(result, file)
-    
+
     success_times = np.array(success_times)
     avg_nav_time = np.nanmean(success_times) if any(~np.isnan(success_times)) else env.time_limit
     result: dict = {
         "CHC": float(sum(chc_total) / episode_num),
         "path_length_ave": float(sum(path_lengths) / episode_num),
-        "success_rate": success_rate,
-        "collision_rate": collision_rate,
-        "timeout_rate": timeout_rate,
+        "success_rate": np.sum(~np.isnan(success_times)) / episode_num,
+        "collision_rate": len(collision_times) / episode_num,
+        "timeout_rate": len(timeout_times) / episode_num,
         "collision_case": collision_cases, "timeout_cases": timeout_cases, "success_times": success_times,
         "ave_nav_time": float(avg_nav_time),
         "ave_reward": float(np.average(episode_rewards)),

@@ -76,6 +76,7 @@ class BallbotState(FullState):
         self.lean_theta = lean_theta
         self.lean_theta_dot = lean_theta_dot
         self._heading: float = np.arctan2(self.vy, self.vx)
+        self.theta = theta
 
     def get_theta(self) -> float:
         return self.lean_theta

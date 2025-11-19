@@ -1,4 +1,6 @@
+import os
 import copy
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 from tensordict import TensorDict
 from torchrl.objectives import ClipPPOLoss
 from torchrl.modules import ProbabilisticActor, TanhNormal, ValueOperator
@@ -19,12 +21,12 @@ from torchrl.envs.utils import ExplorationType, set_exploration_type
 from tensordict.nn import TensorDictModule
 from training_utils import get_setting
 import multiprocess as mp
-import os
 from torch.utils.tensorboard import SummaryWriter
 from torchrl.data import LazyMemmapStorage
 from crowd_nav.policy.wnum_mpc_utils.nn_module import WNumNetworkCritic
 from torchrl.objectives.value import GAE
 from torchrl.collectors.utils import split_trajectories
+
 
 
 class Collector:
@@ -61,6 +63,15 @@ class Collector:
             h["observation"] = convert_trajectory(h["observation"])
             h["next"]["observation"] = convert_trajectory(h["next"]["observation"])
 
+        # history: List[TensorDict] = []  # (Agent, td(Ti, dim))
+        # for tmp in self.env.rb:  # historyの結合 (agent別になってる)
+        #     for t in tmp:
+        #         t["observation"] = convert_trajectory(t["observation"])
+        #         t["next"]["observation"] = convert_trajectory(t["next"]["observation"])
+        #
+        #     tmp_dict: TensorDict = tensordict.dense_stack_tds(tmp, 0)
+        #     history.append(tmp_dict)
+
         if data is not None:
             data.put(history)
             del self.env
@@ -80,7 +91,6 @@ def trial_network(config: NavConfig, episode_num: int, network_model, print_info
     trial_env = CrowdSim(seed=0)
     trial_env.configure(config)
     trial_env.robot.policy.model_predictor.wnum_selector.model = copy.deepcopy(network_model)
-    trial_env.robot.policy.model_predictor.wnum_selector.model.to("cpu")
 
     result: dict = trial(trial_env, episode_num=episode_num, print_info=print_info, visualize=False)
     del trial_env
@@ -121,6 +131,7 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
         writer = None
 
     base_env.robot.policy.model_predictor.wnum_selector.enable_train()
+    # base_env.robot.policy.model_predictor.wnum_selector.model.apply(init_weights)
 
     # params
     num_envs: int = 36
@@ -323,6 +334,8 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
     return result
 
 
+
+
 if __name__ == "__main__":
     policy_setting, human_num = get_setting()
 
@@ -330,10 +343,35 @@ if __name__ == "__main__":
         raise ValueError("set robot_policy as wnum_mpc in experiment_param.yaml")
 
     # params setting
+    # n_iter: int = 40000
+    # training_param: str = "h32" if human_num <= 4 else "h64"
+    # mpc_param: str = "rot_real_wnum_mpc_H{}_margin".format(human_num)
+    # batch_size: int = 128 if human_num >= 4 else 96
+    # model_name: str = "WNumPPO_{}_margin".format(training_param)
+
     training_param: str = "h32" if human_num <= 4 else "h64"
-    mpc_param: str = "wnum_mpc_H{}".format(human_num)
-    model_name: str = "WNumPPO_{}_mean".format(training_param)
+    mpc_param: str = "rot_real_wnum_mpc_H{}".format(human_num)
+    model_name: str = "WNumPPO_{}".format(training_param)
 
     # train wnum_mpc by PPO
+    # wmpc_config: DictConfig = load_wmpc_config(mpc_param_name=mpc_param, training_param=training_param, use_nn="use")
+    # wmpc_config.eval_episodes = 30  # for time saving
+    #wmpc_config.eval_states = "./datas/eval_states/train-{}-30.npy".format(human_num+1)
+    # if hasattr(wmpc_config, "eval_states"):
+    #     del wmpc_config.eval_states
+
+    # train wnum_mpc by PPO
+    # train_ppo(
+    #     n_iter,
+    #     batch_size,
+    #     15,
+    #     model_name=model_name,
+    #     wmpc_config=wmpc_config
+    # )
+
     wmpc_config: DictConfig = load_wmpc_config(mpc_param_name=mpc_param, training_param=training_param, use_nn="use")
+    if hasattr(wmpc_config, "eval_states"):
+        del wmpc_config.eval_states
+
     result_data = train_ppo(model_name=model_name, wmpc_config=wmpc_config, training_param_name=training_param, logging=True)
+

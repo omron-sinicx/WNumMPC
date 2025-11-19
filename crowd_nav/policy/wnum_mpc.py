@@ -1,8 +1,7 @@
 import numpy as np
 import copy
-from typing import Optional
 from crowd_nav.policy.policy import Policy
-from crowd_sim.envs.utils.action import ActionXY
+from crowd_sim.envs.utils.action import ActionXY, ActionRot
 from crowd_nav.policy.wnum_mpc_utils.cv_predictor import CV
 from crowd_sim.envs.utils.state import JointState, FullState, BallbotState, ObservableState
 from config.config import Config
@@ -24,13 +23,21 @@ class WNumMPC(Policy):
         # Action Setting
         self.action_params = config.policy_config['params']['action']
         self.plot_cost_data: bool = config.policy_config["params"]['plot_cost_data']
+        self.save_cost_data: bool = config.policy_config["params"]['save_cost_data']
+        if self.save_cost_data:
+            self.save_cost_dir = config.policy_config["params"]['save_cost_dir']
         self.span = np.deg2rad(self.action_params['span'])
-        self.n_actions = self.action_params["n_actions"]
-        self.n_vel = self.action_params["n_velocity"]
-        self.max_v_ratio = self.action_params["max_v_ratio"]
+        self.action_type = self.action_params['type']
+        if self.action_type == 'ActionXY':
+            self.n_actions = self.action_params["n_actions"]
+            self.n_vel = self.action_params["n_velocity"]
+            if self.span == 2 * np.pi:
+                self.span = 2 * np.pi - ((2 * np.pi) / self.n_actions)
+            self.max_v_ratio = self.action_params["max_v_ratio"]
+        elif self.action_type == 'ActionRot':
+            self.speed_cands = self.action_params["speed_cands"]
+            self.wheel_const = self.config.wheel_const
 
-        if self.span == 2 * np.pi:
-            self.span = 2 * np.pi - ((2 * np.pi) / self.n_actions)
         self.model_predictor.set_params(config)
         self.name = 'wnum_mpc'
 
@@ -39,12 +46,12 @@ class WNumMPC(Policy):
         self.observed_ids: list[int] | None = None  # ids of observed agents
         self.obs_state: np.ndarray = None
 
-    def reset(self, rng: Optional[np.random.Generator] = None) -> None:
+    def reset(self):
         self.trajectory: np.ndarray = None  # trajectories of all agents (robot, humans)
         self.indexed_trajectory = None
         self.prediction = None
         # self.logger.reset()
-        self.model_predictor.reset(rng=rng)
+        self.model_predictor.reset()
         self.step_counter = 0
         self.episode_counter += 1
 
@@ -69,7 +76,7 @@ class WNumMPC(Policy):
         self.indexed_trajectory = np.concatenate((self.indexed_trajectory, idx_arr[None]), axis=0) if self.indexed_trajectory is not None else idx_arr[None]
         return arr
 
-    def predict(self, state: JointState, observed_ids: list[int] | None = None, goaled_ids: list[int] | None = None) -> ActionXY:
+    def predict(self, state: JointState, observed_ids: list[int] | None = None, goaled_ids: list[int] | None = None) -> ActionXY | ActionRot:
         self.observed_ids = observed_ids
         self.obs_state = self.update_trajectory(state)  # array_state
 
@@ -84,23 +91,38 @@ class WNumMPC(Policy):
         self.prediction = predictions
         best_action = info["best_action"]
         # self.logger.add_predictions(array_state, action_set, predictions, costs, goal)
-        action: ActionXY = self.action_post_processing(best_action[2:])
+        action: ActionXY | ActionRot = self.action_post_processing(best_action[2:])
 
         if self.reach_destination(state):
-            return self.action_post_processing([0, 0])
+            return self.action_post_processing([0, 0, 0, 0])
 
-        if self.step_counter % 5 == 2 and self.plot_cost_data:
+        if self.plot_cost_data and self.step_counter % 5 == 2:
             directory = "./plot_data/cost_plot/episode{}".format(plot_info["eps_id"])
             os.makedirs(directory, exist_ok=True)  # log保存用のディレクトリを作成
             file_name = directory + "/cost_step{}".format(self.step_counter)
             self.plot_env_states(state, action_set, costs, best_action[2:], self.trajectory, predictions, info,
                                  file_name)
 
+        if self.save_cost_data:
+            directory = self.save_cost_dir + "/episode{}".format(plot_info["eps_id"])
+            os.makedirs(directory, exist_ok=True)  # log保存用のディレクトリを作成
+            file_name = directory + "/cost_step{}".format(self.step_counter)
+            np.savez(file_name,
+                     state = state,
+                     action_set = action_set,
+                     costs = costs,
+                     indexed_trajectory = self.indexed_trajectory,
+                     predictions = predictions,
+                     **info)
+
         self.step_counter += 1
         return action
 
-    def action_post_processing(self, action) -> ActionXY:
-        global_action_xy = ActionXY(action[0], action[1])
+    def action_post_processing(self, action) -> ActionXY | ActionRot:
+        if self.action_type == 'ActionXY':
+            global_action_xy = ActionXY(action[0], action[1])
+        elif self.action_type == 'ActionRot':
+            global_action_xy = ActionRot(action[0], action[1])
         # Keep in global frame ActionXY
         action_xy = global_action_xy
 
@@ -109,21 +131,32 @@ class WNumMPC(Policy):
     def generate_action_set(self, state: BallbotState, goal) -> np.ndarray:
         pos = np.array(state.get_position())
         vel = state.get_velocity()
-        theta = state.get_theta()
-        theta_dot = state.get_theta_dot()
 
         sim_heading = state.get_heading()
-        thetas = [sim_heading - (self.span / 2.0) + i * self.span / (self.n_actions - 1) for i in range(self.n_actions)]
-        # 向かってる方向に対して-span/2度した所からn_action個に等間隔区分したangleを生成
-        thetas = thetas if len(thetas) > 1 else np.arctan2(goal - pos)
-        vels = np.linspace(0.0, self.max_v_ratio * state.get_vpref(), self.n_vel)  # 速度の絶対値の候補
+
         cv_rollout = []
 
-        for v_tmp in vels:
-            goals = pos[:, None] + (v_tmp * self.model_predictor.prediction_horizon * 10) * np.stack(
-                (np.cos(thetas), np.sin(thetas)), axis=0)  # (2, N)
-            state = np.array([theta[0], theta_dot[0], vel[0], theta[1], theta_dot[1], vel[1]])  # (6, )
-            tmp_rollout = self.generate_cv_rollout(pos, state, goals, v_tmp, self.model_predictor.rollout_steps)
+        if self.action_type == "ActionXY":
+            theta = state.get_theta()
+            theta_dot = state.get_theta_dot()
+            thetas = [sim_heading - (self.span / 2.0) + i * self.span / (self.n_actions - 1) for i in range(self.n_actions)]
+            # 向かってる方向に対して-span/2度した所からn_action個に等間隔区分したangleを生成
+            thetas = thetas if len(thetas) > 1 else np.arctan2(goal - pos)
+            vels = np.linspace(0.0, self.max_v_ratio * state.get_vpref(), self.n_vel)  # 速度の絶対値の候補
+
+            for v_tmp in vels:
+                goals = pos[:, None] + (v_tmp * self.model_predictor.prediction_horizon * 10) * np.stack(
+                    (np.cos(thetas), np.sin(thetas)), axis=0)  # (2, N)
+                state = np.array([theta[0], theta_dot[0], vel[0], theta[1], theta_dot[1], vel[1]])  # (6, )
+                tmp_rollout = self.generate_cv_rollout(pos, state, goals, v_tmp, self.model_predictor.rollout_steps)
+                cv_rollout.append(tmp_rollout)
+        else:
+            left_vels = state.get_vpref() * np.array(self.speed_cands)  # 速度の候補
+            right_vels = state.get_vpref() * np.array(self.speed_cands) # 速度の候補
+            A,B = np.meshgrid(left_vels, right_vels, indexing='ij')
+            vels = np.vstack((A.ravel(), B.ravel())) # (2, v_vel^2)
+            state = np.array([state.theta])  # (1, )
+            tmp_rollout = self.generate_cv_rollout_rot(pos, state, vels, self.model_predictor.rollout_steps)
             cv_rollout.append(tmp_rollout)
 
         ans = np.concatenate(np.array(cv_rollout), axis=0)
@@ -141,8 +174,20 @@ class WNumMPC(Policy):
         rollouts = np.stack(rollouts, axis=1)  # N x T x 4
         return rollouts
 
+    def generate_cv_rollout_rot(self, position, state, vels, length):
+        """To get particular rollout"""
+        rollouts = []
+        state = np.repeat(state[:, None], vels.shape[1], axis=1)  # (1, N)
+        position = np.repeat(position[:, None], vels.shape[1], axis=1)  # (2, N)
+        action = np.vstack(((vels[0]+vels[1])/2, (vels[1]-vels[0])/2 * self.wheel_const))
+        for _ in range(length):
+            state, position, velocity = self.step_dynamics(position, state, action)
+            rollouts.append(np.concatenate((position, action, state[:1]), axis=0).transpose((1, 0)))
+        rollouts = np.stack(rollouts, axis=1)  # N x T x 4
+        return rollouts
+
     def generate_cv_action(self, position, goal, vpref):
-        """To get particular action"""
+        """To gt particular action"""
         dxdy = goal - position  # (2, N)
         thetas = np.arctan2(dxdy[1], dxdy[0])  # (N, )
         return np.stack((np.cos(thetas), np.sin(thetas)), axis=0) * vpref  # (2, N)
@@ -150,13 +195,25 @@ class WNumMPC(Policy):
     def step_dynamics(self, position, state, action):  # (2, N), (6, N), (2, N)
         # Reference input (global)
         N = action.shape[1]
-        U = np.concatenate((np.zeros((2, N)), action[0, None], np.zeros((2, N)), action[1, None]), axis=0)  # (6, N)
 
-        # Integrate with ballbot dynamics
-        next_state = self.integrator(state, U)  # (6, N)
+        if self.action_type == "ActionXY":
+            U = np.concatenate((np.zeros((2, N)), action[0, None], np.zeros((2, N)), action[1, None]), axis=0)  # (6, N)
 
-        velocity = next_state[[2, 5]]  # (2, N)
-        position = position + velocity * self.model_predictor.dt  # (2, N)
+            # Integrate with ballbot dynamics
+            next_state = self.integrator(state, U)  # (6, N)
+
+            velocity = next_state[[2, 5]]  # (2, N)
+            position = position + velocity * self.model_predictor.dt  # (2, N)
+
+        elif self.action_type == "ActionRot":
+            dt_ = float(self.model_predictor.dt)
+            theta = state[0] + action[1] * dt_/2
+            velocity = np.vstack((action[0] * np.cos(theta), action[0] * np.sin(theta)))
+            position += velocity * dt_
+            next_state = state
+            next_state[0] += action[1] * dt_
+            pass
+        
         return next_state, position, velocity
 
     def integrator(self, S, U):
@@ -186,7 +243,7 @@ class WNumMPC(Policy):
         self._plot_color_mesh(fig, ax4, w_scores, action_set, info["best_action_w"][2:], "winding cost", None)
         self._plot_color_mesh(fig, ax5, g_scores, action_set, info["best_action_g"][2:], "goal cost", None)
 
-        plt.axis('equal')
+        #plt.axis('equal')
         plt.tight_layout()
         plt.savefig(file_name)
         plt.close(fig)
@@ -214,8 +271,9 @@ class WNumMPC(Policy):
             ax.add_patch(circle)
 
         # 矢印を描く
-        for x, y, vx, vy in vector_info[0:1]:
-            ax.quiver(x, y, vx, vy, angles='xy', scale_units='xy', scale=1, color='b')
+        if self.action_type == "ActionXY":
+            for x, y, vx, vy in vector_info[0:1]:
+                ax.quiver(x, y, vx, vy, angles='xy', scale_units='xy', scale=1, color='b')
 
         for i, vec_info in enumerate(vector_info[1:]):
             x, y, vx, vy = vec_info
@@ -270,8 +328,12 @@ class WNumMPC(Policy):
         # action_set: N x T x 4 (px, py, vx, vy)
         # costs: N
         dummy_v = None
-        xx = action_set[:, 0, 2]
-        yy = action_set[:, 0, 3]
+        if self.action_type == "ActionXY":
+            xx = action_set[:, 0, 2]
+            yy = action_set[:, 0, 3]
+        else:
+            xx = action_set[:, 0, 2]
+            yy = action_set[:, 0, 3]
         value = costs[:, 0]
         v_map = dict()
         for i in range(xx.shape[0]):
@@ -288,7 +350,10 @@ class WNumMPC(Policy):
 
         im = ax2.pcolormesh(xs, ys, values, cmap='viridis')
 
-        circle = plt.Circle((best_action[0], best_action[1]), 0.1, fill=False, color='r')
+        if self.action_type == "ActionXY":
+            circle = plt.Circle((best_action[0], best_action[1]), 0.1, fill=False, color='r')
+        else:
+            circle = plt.Circle((best_action[0], best_action[1]), 0.1, fill=False, color='r')
         ax2.add_patch(circle)
         if w_scores is not None:
             w_opt_id = np.argmin(w_scores, axis=0)

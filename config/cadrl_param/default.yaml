@@ -21,17 +21,17 @@ trainer:
 
 
 imitation_learning:
-  il_episodes: 20000
+  il_episodes: 50000
   il_policy: "orca"
-  il_epochs: 10
-  il_learning_rate: 0.0002
+  il_epochs: 100
+  il_learning_rate: 0.01
   safety_space: 0.3  # increase the safety space in ORCA demonstration for robot
 
 
 train:
-  rl_learning_rate: 0.00002
-  train_batches: 100  # number of batches to train at the end of training episode, 100
-  train_episodes: 10000  # training episodes in outer loop, 10000
+  rl_learning_rate: 0.001
+  train_batches: 1  # number of batches to train at the end of training episode, 100
+  train_episodes: 3000  # training episodes in outer loop, 10000
   sample_episodes: 1  # number of episodes sampled in one training episode
   target_update_interval: 50
   evaluation_interval: 100

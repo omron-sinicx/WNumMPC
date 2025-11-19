@@ -51,19 +51,21 @@ class BallBot(Agent):
         Perform an action and update the state
         """
         self.check_validity(action)
-        vx, vy = (action.vx + self.vx) / 2.0, (action.vy + self.vy) / 2.0  # mean
-        if np.linalg.norm([vx, vy]) < 1e-4:
-            vx, vy = 0.0, 0.0
-        cliped_action = ActionXY(vx, vy)
-        vel_for_calc = ActionXY((self.vx + cliped_action.vx) / 2.0, (self.vy + cliped_action.vy) / 2.0)
-        pos = self.compute_position(vel_for_calc, self.time_step)
-        self.px, self.py = pos
         if self.kinematics == 'holonomic' or self.kinematics == "ballbot":
+            vx, vy = (action.vx + self.vx) / 2.0, (action.vy + self.vy) / 2.0  # mean
+            if np.linalg.norm([vx, vy]) < 1e-4:
+                vx, vy = 0.0, 0.0
+            cliped_action = ActionXY(vx, vy)
+            vel_for_calc = ActionXY((self.vx + cliped_action.vx) / 2.0, (self.vy + cliped_action.vy) / 2.0)
+            pos = self.compute_position(vel_for_calc, self.time_step)
+            self.px, self.py = pos
             self.vx = cliped_action.vx
             self.vy = cliped_action.vy
             self.theta = np.arctan2(self.vy, self.vx)
         else:
-            self.theta = (self.theta + action.r) % (2 * np.pi)
+            pos = self.compute_position(action, self.time_step)
+            self.px, self.py = pos
+            self.theta = (self.theta + action.r * self.time_step) % (2 * np.pi)
             self.vx = action.v * np.cos(self.theta)
             self.vy = action.v * np.sin(self.theta)
 

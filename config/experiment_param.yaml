@@ -1,38 +1,44 @@
 sim:
-  human_num: 8  # the number of all agents = (human_num+1)
-  robot_policy: "wnum_mpc"  # orca / wnum_mpc / cadrl / vanilla_mpc / mean_mpc (T-MPC)
+  human_num: 6  # the number of all agents = (human_num+1)
+  robot_policy: "wnum_mpc"  # wnum_mpc / vanilla_mpc / mean_mpc (T-MPC)
   position:
     circle:
-      r: 2.0  # for creating a circle scenario (radius)
+      r: 2.0
+      rx: 1.5  # for creating a circle scenario (radius)
+      ry: 1.5  # for creating a circle scenario (radius)
     rectangle:
-      w: 4.0  # disable
-  time_limit: 20.0  # time limit for each episode
+      w: 6.0  # disable
+    min_dist: 0.90
+  time_limit: 30.0  # time limit for each episode
   done_if_all_agents_reached: True  # False if train CADRL
 
+goal_threshold: 1.5
+collision_radius: 0.2
+
 eval_episodes: 100 # episodes for evaluation (30 is set when training)
-
 plot_trajectory: False
-plot_weight: False  # plot_trajectoryにweightも含むか否か
 plot_animation: False
-plot_dir: ./plot_data/wnum_mpc8_gen/
+animation_dir: ./plot_data/animation_normal_angle_cost/
+save_trajectory: False
+trajectory_dir: ./plot_data/animation_sim_normal_margin/
+use_maru: False
+use_maru_verbose: False
+#eval_states: ./datas/eval_states/slow-7-100.npy
+#eval_states: ./datas/eval_states/optuna-7-30.npy
+#result_file: tmp.json
+#result_file: ./datas/maru_results/slow-7-100-normal-margin.json
 
-# gen: random, opp: crossing
-## optunaを使う時はコメントアウトして下さい。
-eval_states: ./datas/eval_states/8-100-gen.npy
-#result_file: ./datas/eval_results/8-100-wnum-gen.json
-
-#eval_states: ./datas/eval_states/8-100-opp.npy
-#result_file: ./datas/eval_results/8-100-wnum-opp.json
+detect_collisions: True
 
 # for optimization of hyperparameters
-use_optuna: True
+use_optuna: False
 multi_thread: True
-optuna_trials: 32
+optuna_trials: 144
 
 
 # for CADRL
 cadrl:
-  mlp_dims: [256, 256, 256, 1]
+  mlp_dims: [150, 100, 100, 1]
   multiagent_training: true
 
 

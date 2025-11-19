@@ -4,7 +4,6 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from typing import Optional
 from omegaconf import DictConfig
 from crowd_nav.policy.wnum_mpc_utils.nn_module import WNumNNSelector
 from crowd_nav.policy.wnum_mpc_utils.wnum_utils import to_numpy, WNumPolicyObservation, to_WnumPolicyObservation
@@ -15,6 +14,7 @@ from crowd_sim.envs.utils.state import BallbotState
 class Target:
     def __init__(self, target_wnums: np.ndarray | None):
         self.wnums = target_wnums
+        self.wnum_score = None
 
     def is_None(self) -> bool:
         return self.wnums is None
@@ -99,7 +99,7 @@ class CV(object):
         if self.use_NN:
             self.human_num = config.sim.human_num
             input_size: int = (config.sim.human_num * 7 + 5)  # (H*7+5)
-            output_size: int = 2 * config.sim.human_num  # output_shape: (2*H)
+            output_size: int = 2 ** config.sim.human_num  # output_shape: (2*H)
             self.wnum_selector: WNumNNSelector = WNumNNSelector(
                 dict_conf["training_param"],
                 input_size=input_size,
@@ -107,15 +107,15 @@ class CV(object):
                 human_num=config.sim.human_num
             )
 
-    def reset(self, rng: Optional[np.random.Generator]=None) -> None:
+        self.wheel_const = config.wheel_const
+        self.goal_dist = config.policy_config.goal_threshold * config.robot.radius
+
+    def reset(self) -> None:
         self.target = Target(None)
         self.w_score_percents = []
         self.self_states = []
         if self.randomize_select_step:
-            if rng is not None:
-                self.step_count: int = rng.integers(0, self.select_span)
-            else:
-                self.step_count: int = np.random.randint(0, self.select_span)
+            self.step_count: int = np.random.randint(0, self.select_span)
         else:
             self.step_count: int = 0
 
@@ -253,9 +253,8 @@ class CV(object):
                     self.target.wnums, self.wnum_id, self.sample_log_probs = self.wnum_selector.select_target_winding_number(self.observed_state_used)
                 else:
                     self.target.wnums = self.select_target_winding_number(predictions, state, actions, goal)[0]
-            _target = Target(np.array([self.target.wnums]))
             # select action from target winding number
-            _, each_scores, c_total = self.select_action_from_target(predictions, state, actions, goal, _target)
+            _, each_scores, c_total = self.select_action_from_target(predictions, state, actions, goal, Target(np.array([self.target.wnums])))
         else:
             # select action and eval each action without target winding number
             c_total, each_scores, _ = self._eval_actions(predictions, state, actions, goal, Target(None), False)
@@ -309,18 +308,42 @@ class CV(object):
         """ゴールとの距離の変化量"""
         dist = np.linalg.norm(goal[None, None] - actions[:, :, :2], axis=-1)  # (N x T')
 
-        states = np.ones(dist.shape[0]) * np.linalg.norm(goal - state[0, :2])
+        angle_dist = np.arctan2(goal[None, None, 1] - actions[:, :, 1], goal[None, None, 0] - actions[:, :, 0]) - actions[:,:,4] % (2*np.pi)
+        angle_dist = abs(angle_dist)
+        angle_dist = np.minimum(angle_dist, 2 * np.pi - angle_dist)
+        total_dist = dist + angle_dist / self.wheel_const
+
+        '''
+        state_angle_dist = np.arctan2(goal[1] - state[0, 1], goal[0] - state[0, 0]) - np.mean(actions[:,0,4])
+        state_angle_dist = abs(state_angle_dist)
+        state_angle_dist = min(state_angle_dist, 2 * np.pi - state_angle_dist)
+        state_dist = np.linalg.norm(goal - state[0, :2])
+        states = np.ones(dist.shape[0]) * (state_dist + state_angle_dist * min(state_dist, 1./self.wheel_const))
         diff = np.diff(np.concatenate([states[:, None], dist], axis=-1), axis=-1)
         diff_sum = np.abs(np.sum(np.sign(diff), axis=-1))
-
+        
         for i in range(len(diff_sum)):
             if diff_sum[i] != (dist.shape[-1]):
                 min_dist = np.min(dist[i])
                 min_index = np.argmin(dist[i])
                 for j in range(min_index, len(dist[i])):
                     dist[i][j] = min_dist
+        '''
+        for i in range(dist.shape[0]):
+            indices = np.where(dist[i] < self.goal_dist)[0]
+            if len(indices) > 0:
+                j = indices[0]
+                total_dist[i, j:] = 0
 
-        cost = np.sum(dist, axis=-1)[:, None]
+        cost = np.sum(dist, axis = -1)[:,None]
+        
+        #cost = np.min(dist[:,1:], axis=-1)[:, None] * dist.shape[1]
+        
+        '''
+        cost = np.linalg.norm(goal[None] - actions[:, -1, :2], axis=-1)[:, None]
+        cost *= actions.shape[1]
+        '''
+        
         cost *= 4
         if cost.shape[0] != 1:
             cost = (cost - np.min(cost))
@@ -335,6 +358,7 @@ class CV(object):
         Cost using 2D Gaussian around obstacles
         """
         # actions.shape : N x T x 4 (px, py, vx, vy)
+        assert predictions.shape[1] == 1
         dx = actions[:, None, :, None, 0] - predictions[:, :, :, :, 0]  # N x S x T' x H
         dy = actions[:, None, :, None, 1] - predictions[:, :, :, :, 1]  # N x S x T' x H
 
@@ -363,7 +387,7 @@ class CV(object):
         cost += np.exp(-2*mx*abs(mx)/self.sigma_w**2)[:,None,:]/H
         my = np.minimum(actions[:,:,1]-self.min_y, self.max_y - actions[:,:,1]) # N x T
         cost += np.exp(-2*my*abs(my)/self.sigma_w**2)[:,None,:]/H
-
+        
         cost = np.sum(cost, axis=-1)
 
         if select:
@@ -373,12 +397,11 @@ class CV(object):
 
     def discrete_cost(self, state, actions, predictions, target: Target, select: bool):
         # costs of winding number, (1+H) x 5, N x T' x 4, N x S x T' x H x 4
-        #assert target.wnums.shape[0] == 1 and target.wnums.shape[1] == 2 * self.human_num
         if self.use_NN:
             target_wnum = target.wnums[:,:self.human_num]
         else:
             target_wnum = target.wnums
-
+            
         N = actions.shape[0]  # N: actions num (discrete num)
         S = predictions.shape[1]
         state_ = np.tile(state[None, None, None, None, 0, :2] - state[None, None, None, 1:, :2], (N, S, 1, 1, 1))
@@ -397,6 +420,7 @@ class CV(object):
             w_nums = w_nums_pre_human - target_wnum
             w_nums = w_nums ** 2
 
+            winding_nums = np.mean(w_nums, axis=-1)  # N x S
             if self.use_NN:
                 wnum_weight = target.wnums[0,self.human_num:]
                 wnum_weight = 0.5 * wnum_weight + 0.5
