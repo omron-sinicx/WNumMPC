@@ -6,6 +6,9 @@ Conf2024, [project_page], [paper].
 The framework of our codes is based on the work ([sriyash421/Pred2Nav](https://github.com/sriyash421/Pred2Nav)),
 and the codes for CADRL are based on the work ([vita-epfl/CrowdNav](https://github.com/vita-epfl/CrowdNav)). 
 
+This `maru_exp_iros` branch contains the code for the real-robot experiment.
+For the code used in the holonomic simulation experiment, please see `sim_iros` branch of this repository.
+
 <br>
 
 ## Tested Environment
@@ -61,32 +64,17 @@ python train_ppo.py
 
 
 ## Citation
-TODO
-
+```
+@misc{nakao2026symmetrybreakingmultiagentnavigationwinding,
+      title={Symmetry-Breaking in Multi-Agent Navigation: Winding Number-Aware MPC with a Learned Topological Strategy}, 
+      author={Tomoki Nakao and Kazumi Kasaura and Tadashi Kozuno},
+      year={2026},
+      eprint={2511.15239},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2511.15239}, 
+}
+```
 <br>
 
 
-### (メモ) 各コードの説明
-- 実行関係のcode
-  - train_ppo.py: PPOでWnumMPCを学習するコード
-  - optimize_param.py: WnumMPCのパラメータをoptunaするコード
-  - eval_policy.py: 学習したWnumMPCを評価するコード
-    - experiment_param.yamlのrobot_policyを変更すればCADRL/ORCAも動かせる
-  - train_cadrl.py : CADRLを学習するコード
-    - experiment_param.yamlのrobot_policy = CADRLにしてから実行
-
-
-- maru (submodule)
-  - maruを動かすためのコード
-
-- config
-  - config/experiment_param.yaml: envの設定ファイル
-    - 方策やAgent数を変更出来る (H: humanの人数(全体のAgent数はH+1), robot_policy: 方策)
-    - plot_trajectory = True にするとエピソードごとの軌跡を描画する
-  - その他のconfigはhydraで管理している
-
-
-- WnumMPC
-  - crowd_nav/policy/wnum_mpc.py: WnumMPCのラッパー
-  - crowd_nav/policy/wnum_mpc_utils/cv_predictor.py: WnumMPCのコストや入力計算の実装
-  - crowd_nav/policy/wnum_mpc_utils/nn_module.py: WnumMPCのNNの実装
