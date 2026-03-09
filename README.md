@@ -6,6 +6,10 @@ Conf2024, [project_page], [paper].
 The framework of our codes is based on the work ([sriyash421/Pred2Nav](https://github.com/sriyash421/Pred2Nav)),
 and the codes for CADRL are based on the work ([vita-epfl/CrowdNav](https://github.com/vita-epfl/CrowdNav)). 
 
+This `sim_iros` branch contains the code for the holonomic simulation experiment.
+For the code used in the real-robot experiment, please see `maru_exp_iros` branch of this repository.
+
+
 <br>
 
 ## Tested Environment
@@ -64,7 +68,16 @@ python train_ppo.py
 
 
 ## Citation
-TODO
-
+```
+@misc{nakao2026symmetrybreakingmultiagentnavigationwinding,
+      title={Symmetry-Breaking in Multi-Agent Navigation: Winding Number-Aware MPC with a Learned Topological Strategy}, 
+      author={Tomoki Nakao and Kazumi Kasaura and Tadashi Kozuno},
+      year={2026},
+      eprint={2511.15239},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2511.15239}, 
+}
+```
 <br>
 
