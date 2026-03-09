@@ -1,4 +1,7 @@
 import copy
+import math
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 from tensordict import TensorDict
 from torchrl.objectives import ClipPPOLoss
 from torchrl.modules import ProbabilisticActor, TanhNormal, ValueOperator
@@ -12,11 +15,9 @@ from crowd_sim.envs.crowd_sim import CrowdSim
 from config.config import Config as NavConfig
 from crowd_nav.policy.wnum_mpc import WNumMPC
 from omegaconf import DictConfig
-from crowd_nav.policy.wnum_mpc_utils.wnum_utils import convert_trajectory
 from training_utils import load_wmpc_config, print_result, trial
 from torchrl.data import BoundedTensorSpec, SamplerWithoutReplacement, ReplayBuffer
 from torchrl.envs.utils import ExplorationType, set_exploration_type
-from tensordict.nn import TensorDictModule
 from training_utils import get_setting
 import multiprocess as mp
 import os
@@ -29,18 +30,23 @@ from torchrl.collectors.utils import split_trajectories
 
 class Collector:
     def __init__(self, config: NavConfig, model_state_dict, episode_num: int):
-        self.env: CrowdSim = CrowdSim(seed=0)
-        self.env.configure(config)
+        self.config = config
+        self.model_state_dict = copy.deepcopy(model_state_dict)
+        self.episode_num: int = episode_num
+
+    def __call__(self, seed: int, data):
+        torch.manual_seed(seed)
+        self.env: CrowdSim = CrowdSim(seed=seed)
+        self.env.configure(self.config)
+
         if not isinstance(self.env.robot.policy, WNumMPC):
             raise ValueError("This is not WNumMPC")
 
         self.env.robot.policy.model_predictor.wnum_selector.model.load_state_dict(
-            copy.deepcopy(model_state_dict)
+            self.model_state_dict
         )
         self.env.robot.policy.model_predictor.wnum_selector.model.to("cpu")
-        self.episode_num: int = episode_num
 
-    def __call__(self, seed: int, data):
         obs, observed_ids = self.env.reset(seed=seed)
         for _ in range(self.episode_num):
             while True:
@@ -57,10 +63,6 @@ class Collector:
         for tmp in self.env.rb:  # historyの結合 (agent別になってる)
             history += tmp
 
-        for h in history:
-            h["observation"] = convert_trajectory(h["observation"])
-            h["next"]["observation"] = convert_trajectory(h["next"]["observation"])
-
         if data is not None:
             data.put(history)
             del self.env
@@ -76,8 +78,9 @@ def init_weights(m):
         torch.nn.init.uniform_(m.bias, -1e-2, 1e-2)
 
 
-def trial_network(config: NavConfig, episode_num: int, network_model, print_info: bool) -> dict:
+def trial_network(config: NavConfig, episode_num: int, network_model, print_info: bool, only_symmetric_instances: bool=False) -> dict:
     trial_env = CrowdSim(seed=0)
+    trial_env.only_symmetric_instances = only_symmetric_instances
     trial_env.configure(config)
     trial_env.robot.policy.model_predictor.wnum_selector.model = copy.deepcopy(network_model)
     trial_env.robot.policy.model_predictor.wnum_selector.model.to("cpu")
@@ -90,6 +93,8 @@ def trial_network(config: NavConfig, episode_num: int, network_model, print_info
 def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str, logging: bool, trial_id: Optional[int]=None) -> dict[str, float | int]:
     np.random.seed(0)
     torch.manual_seed(0)
+    # training_device: torch.device = torch.device("cpu") if not torch.cuda.is_available() else torch.device("cuda:0")
+    training_device = "cpu"
 
     wmpc_config.eval_episodes = 30  # for training
     config: NavConfig = NavConfig(wmpc_config)
@@ -121,13 +126,13 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
         writer = None
 
     base_env.robot.policy.model_predictor.wnum_selector.enable_train()
+    base_env.robot.policy.model_predictor.wnum_selector.model.to(training_device)
 
     # params
-    num_envs: int = 36
-    training_span: int = num_envs
-
-    eval_span: int = training_span * 35  # training_spanの倍数にすること
-    save_span: int = eval_span  # eval_spanの倍数にすること
+    num_envs: int = 18
+    n_episodes_per_step: int = 36 * 9  # 学習1ステップで使用するAgentあたりのエピソード数
+    eval_span: int = 25
+    save_span: int = eval_span
 
     ppo_parm = wmpc_config["params"]["training_param"]["ppo_param"]
     n_iter = ppo_parm["n_iter"]
@@ -155,13 +160,15 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
     critic_input_size: int = base_env.robot.policy.model_predictor.wnum_selector.input_size
     in_key = "observation"
 
-    critic_hidden_size: int = config.policy_config.params.training_param.nn_param.hidden_size
+    critic_input_size: int = config.sim.human_num * 9 + 5
+    in_key = "global_obs"
+
+    critic_hidden_size: int = config.policy_config.params.training_param.nn_param.hidden_size * 2
     critic = WNumNetworkCritic(input_size=critic_input_size, hidden_size=critic_hidden_size).to(dev)
-    value_module = TensorDictModule(critic, [in_key], ["value"])
     critic_module = ValueOperator(
         module=critic,
         in_keys=[in_key],
-    )
+    ).to(training_device)
 
     # Loss Functions
     advantage_gae = GAE(
@@ -171,7 +178,7 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
         average_gae=False,
         # average_gae=True,
         time_dim=1
-    )
+    ).to(training_device)
 
     # PPO module
     loss_module = ClipPPOLoss(
@@ -184,27 +191,33 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
         entropy_coef=entropy_eps,
         critic_coef=1.0,
         loss_critic_type="smooth_l1",
-    )
-    loss_module.to(dev)
+    ).to(training_device)
 
     optim = torch.optim.Adam(loss_module.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optim, n_iter // num_envs, 0.0
-    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, n_iter, eta_min=1e-5)
 
     max_reward = 0.0
     max_success = 0.0
 
     rollout_datas: list[TensorDict] = []
 
-    for i in tqdm(range(n_iter // num_envs), desc="[TRAIN]"):  # training loop
+    for i in tqdm(range(n_iter), desc="[TRAIN]"):  # training loop
         datas = mp.Queue()
         base_env.rb = [[] for _ in range(human_num + 1)]
-        tmp_model_state_dict = copy.deepcopy(base_env.robot.policy.model_predictor.wnum_selector.model.state_dict())
-        jobs = [
-            mp.Process(target=Collector(config, tmp_model_state_dict, training_span // num_envs), args=(env_id, datas))
-            for env_id in range(num_envs * i, num_envs * (i + 1))
-        ]
+
+        # get model param and send to cpu
+        model_state = copy.deepcopy(base_env.robot.policy.model_predictor.wnum_selector.model.state_dict())
+        tmp_model_state_dict = {k: v.cpu() for k, v in model_state.items()}
+
+        jobs = []
+        for env_id in range(num_envs):
+            episode_num = n_episodes_per_step // (num_envs * (human_num + 1))
+            current_seed = i * num_envs + env_id
+            if env_id < math.ceil((n_episodes_per_step % (num_envs * (human_num + 1))) / (human_num + 1)):
+                episode_num += 1
+
+            jobs.append(mp.Process(target=Collector(config, tmp_model_state_dict, episode_num), args=(current_seed, datas)))
+
         for job in jobs:
             job.daemon = True
             job.start()
@@ -215,73 +228,72 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
         for job in jobs:
             job.join()
 
-        if i % (training_span // num_envs) == 0:
-            if False:
-                if logging:
-                    print("data is not enough, {}/{}".format(len(rollout_datas), batch_size))
-            else:
-                history_tmp: TensorDict = tensordict.dense_stack_tds(rollout_datas, dim=0)
+        history_tmp: TensorDict = tensordict.dense_stack_tds(rollout_datas, dim=0)
 
-                # padding and get mask
-                padded_history = split_trajectories(history_tmp, done_key=("done"))
-                mask_key = ("collector", "mask") if ("collector", "mask") in padded_history.keys(True, True) else "mask"
-                flatten_mask = padded_history.get(mask_key).reshape(-1)
+        # padding and get mask
+        padded_history = split_trajectories(history_tmp, done_key=("done")).to(device=training_device)
+        mask_key = ("collector", "mask") if ("collector", "mask") in padded_history.keys(True, True) else "mask"
+        flatten_mask = padded_history.get(mask_key).reshape(-1)
 
-                # calc GAE
-                with torch.no_grad():
-                    advantage_gae(
-                        padded_history,
-                        params=loss_module.critic_network_params,
-                        target_params=loss_module.target_critic_network_params,
-                    )
+        # calc GAE
+        with torch.no_grad():
+            advantage_gae(
+                padded_history,
+                params=loss_module.critic_network_params,
+                target_params=loss_module.target_critic_network_params,
+            )
 
-                # get valid history (remove padding)
-                padded_history = padded_history.reshape(-1)
-                history = padded_history[flatten_mask]
-                buffer.extend(history)
+        # get valid history (remove padding)
+        padded_history = padded_history.reshape(-1)
+        history = padded_history[flatten_mask]
+        buffer.extend(history)
 
-                loss_dicts: list[TensorDict] = []
-                ave_loss = []
+        loss_dicts: list[TensorDict] = []
+        ave_loss = []
 
-                # training loop
-                for _ in range(num_epoch):
-                    for batch in buffer:
-                        loss_val_dict: TensorDict = loss_module(batch)
+        # training loop
+        for _ in range(num_epoch):
+            for batch in buffer:
+                batch = batch.to(training_device)
+                loss_val_dict: TensorDict = loss_module(batch)
 
-                        loss_value = loss_val_dict["loss_objective"] + loss_val_dict["loss_critic"] + loss_val_dict["loss_entropy"]
-                        loss_dicts.append(loss_val_dict.clone().detach())
-                        ave_loss.append(loss_value.clone().detach())
+                loss_value = loss_val_dict["loss_objective"] + loss_val_dict["loss_critic"] + loss_val_dict["loss_entropy"]
+                loss_dicts.append(loss_val_dict.clone().detach())
+                ave_loss.append(loss_value.clone().detach())
 
-                        loss_value.backward()
-                        torch.nn.utils.clip_grad_norm_(loss_module.parameters(), max_grad_norm)
+                loss_value.backward()
+                torch.nn.utils.clip_grad_norm_(loss_module.parameters(), max_grad_norm)
 
-                        optim.step()
-                        optim.zero_grad()
+                optim.step()
+                optim.zero_grad()
 
-                if writer is not None:
-                    loss_dict_mean: TensorDict = tensordict.dense_stack_tds(loss_dicts, dim=0).mean(dim=0)
-                    writer.add_scalar("loss", torch.mean(torch.Tensor(ave_loss)), i * training_span)
-                    writer.add_scalar("ppo/loss", torch.mean(torch.Tensor(ave_loss)), i * training_span)
-                    writer.add_scalar("ppo/loss_objective", loss_dict_mean["loss_objective"], i * training_span)
-                    writer.add_scalar("ppo/loss_critic", loss_dict_mean["loss_critic"], i * training_span)
-                    writer.add_scalar("ppo/loss_entropy", loss_dict_mean["loss_entropy"], i * training_span)
-                    writer.add_scalar("ppo/ESS", loss_dict_mean["ESS"], i * training_span)
-                    writer.add_scalar("ppo/entropy", loss_dict_mean["entropy"], i * training_span)
-                    writer.add_scalar("ppo/clip_fraction", loss_dict_mean["clip_fraction"], i * training_span)
-                    writer.add_scalar("ppo/lr", optim.param_groups[0]["lr"], i * training_span)
+        if writer is not None:
+            loss_dict_mean: TensorDict = tensordict.dense_stack_tds(loss_dicts, dim=0).mean(dim=0)
+            writer.add_scalar("loss", torch.mean(torch.Tensor(ave_loss)), i)
+            writer.add_scalar("ppo/loss", torch.mean(torch.Tensor(ave_loss)), i)
+            writer.add_scalar("ppo/loss_objective", loss_dict_mean["loss_objective"], i)
+            writer.add_scalar("ppo/loss_critic", loss_dict_mean["loss_critic"], i)
+            writer.add_scalar("ppo/loss_entropy", loss_dict_mean["loss_entropy"], i)
+            writer.add_scalar("ppo/ESS", loss_dict_mean["ESS"], i)
+            writer.add_scalar("ppo/entropy", loss_dict_mean["entropy"], i)
+            writer.add_scalar("ppo/clip_fraction", loss_dict_mean["clip_fraction"], i)
+            writer.add_scalar("ppo/lr", optim.param_groups[0]["lr"], i)
 
-                buffer.empty()  # bufferのclear
-                rollout_datas = []
-                scheduler.step()
+        buffer.empty()  # bufferのclear
+        rollout_datas = []
+        scheduler.step()
 
         result = None
-        if (writer is not None and (i * num_envs) % eval_span == 0) or (i == (n_iter // num_envs) - 1):
-            with set_exploration_type(ExplorationType.MODE), torch.no_grad():
+        if (writer is not None and i % eval_span == 0) or (i == (n_iter - 1)):
+            with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
                 episode_num: int = config.env.eval_episodes
-                if trial_id is not None and (not (i == (n_iter // num_envs) - 1)):
+                if trial_id is not None and (not i == (n_iter - 1)):
                     episode_num = min(episode_num, 20)
 
-                result: dict = trial_network(config, episode_num, base_env.robot.policy.model_predictor.wnum_selector.model, logging)
+                result: dict = trial_network(
+                    config, episode_num, base_env.robot.policy.model_predictor.wnum_selector.model, logging,
+                    only_symmetric_instances=True
+                )
 
             if logging:
                 print_result(result)
@@ -292,30 +304,28 @@ def train_ppo(model_name: str, wmpc_config: DictConfig, training_param_name: str
                     model_path = "./models/ww_human_{}/{}".format(base_env.human_num, model_name)
                 os.makedirs(model_path, exist_ok=True)
 
-                if result["success_rate"] >= 1.0 or (i * num_envs) % save_span == 0:
+                if result["success_rate"] >= 1.0 or i % save_span == 0:
                     if logging:
-                        torch.save(base_env.robot.policy.model_predictor.wnum_selector.model.state_dict(),
-                                   model_path + "/epi{}.pth".format(i * training_span))
+                        torch.save(base_env.robot.policy.model_predictor.wnum_selector.model.state_dict(), model_path + "/epi{}.pth".format(i))
                     print("ave reward: {}, model saved!".format(result["ave_reward"]))
 
                 if max_success < result["success_rate"] or (
-                        max_reward < result["ave_wnum_reward"] and max_success == result["success_rate"]):
+                        max_reward < result["ave_reward"] and max_success == result["success_rate"]):
                     if logging:
-                        torch.save(base_env.robot.policy.model_predictor.wnum_selector.model.state_dict(),
-                                   model_path + "/best.pth")
-                    max_reward = result["ave_wnum_reward"]
+                        torch.save(base_env.robot.policy.model_predictor.wnum_selector.model.state_dict(), model_path + "/best.pth")
+                    max_reward = result["ave_reward"]
                     max_success = result["success_rate"]
-                    print("[MAX] ave reward all: {}, model saved!".format(result["ave_wnum_reward"]))
+                    print("[MAX] ave reward all: {}, model saved!".format(result["ave_reward"]))
 
             if writer is not None:
-                writer.add_scalar("eval/success_rate", result["success_rate"], i * training_span)
-                writer.add_scalar("eval/ave_reward", result["ave_reward"], i * training_span)
-                writer.add_scalar("eval/ave_nav_time", result["ave_nav_time"], i * training_span)
-                writer.add_scalar("eval/path_length_ave", result["path_length_ave"], i * training_span)
-                writer.add_scalar("eval/ave_wnum_reward", result["ave_wnum_reward"], i * training_span)
-                writer.add_scalar("eval/CHC", result["CHC"], i * training_span)
-                writer.add_scalar("eval/ave_wnum_percent", result["ave_wnum_percent"], i * training_span)
-                writer.add_scalar("eval/ave_extra_time_to_goals", result["ave_extra_time_to_goals"], i * training_span)
+                writer.add_scalar("eval/success_rate", result["success_rate"], i)
+                writer.add_scalar("eval/ave_reward", result["ave_reward"], i)
+                writer.add_scalar("eval/ave_nav_time", result["ave_nav_time"], i)
+                writer.add_scalar("eval/path_length_ave", result["path_length_ave"], i)
+                writer.add_scalar("eval/ave_wnum_reward", result["ave_wnum_reward"], i)
+                writer.add_scalar("eval/CHC", result["CHC"], i)
+                writer.add_scalar("eval/ave_wnum_percent", result["ave_wnum_percent"], i)
+                writer.add_scalar("eval/ave_extra_time_to_goals", result["ave_extra_time_to_goals"], i)
 
     if logging:
         writer.close()
@@ -330,7 +340,7 @@ if __name__ == "__main__":
         raise ValueError("set robot_policy as wnum_mpc in experiment_param.yaml")
 
     # params setting
-    training_param: str = "h32" if human_num <= 4 else "h64"
+    training_param: str = "h128"
     mpc_param: str = "wnum_mpc_H{}".format(human_num)
     model_name: str = "WNumPPO_{}_mean".format(training_param)
 

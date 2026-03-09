@@ -1,12 +1,10 @@
 # Winding-Number-Aware Navigation 
 
-This repository contains the code for the paper "Symmetry-Breaking in Multi-Agent Navigation: Winding Number-Aware MPC with a Learned Topological Strategy".
+This repository contains the code for the paper "Winding-Number-Aware Navigation" by ... .
+Conf2024, [project_page], [paper].
 
 The framework of our codes is based on the work ([sriyash421/Pred2Nav](https://github.com/sriyash421/Pred2Nav)),
 and the codes for CADRL are based on the work ([vita-epfl/CrowdNav](https://github.com/vita-epfl/CrowdNav)). 
-
-This `main` branch contains the code for the holonomic simulation experiment.
-For the code used in the real-robot experiment, please see `maru_exp` branch of this repository.
 
 <br>
 
@@ -66,15 +64,7 @@ python train_ppo.py
 
 
 ## Citation
-arXiv version:
-```
-@misc{nakao2025symmetrybreakingmultiagentnavigationwinding,
-      title={Symmetry-Breaking in Multi-Agent Navigation: Winding Number-Aware MPC with a Learned Topological Strategy}, 
-      author={Tomoki Nakao and Kazumi Kasaura and Tadashi Kozuno},
-      year={2025},
-      eprint={2511.15239},
-      archivePrefix={arXiv},
-      primaryClass={cs.RO},
-      url={https://arxiv.org/abs/2511.15239}, 
-}
-```
+TODO
+
+<br>
+

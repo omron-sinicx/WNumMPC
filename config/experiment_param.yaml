@@ -13,12 +13,13 @@ eval_episodes: 100 # episodes for evaluation (30 is set when training)
 
 plot_trajectory: False
 plot_weight: False  # plot_trajectoryにweightも含むか否か
+plot_wnum: False
 plot_animation: False
-plot_dir: ./plot_data/wnum_mpc8_gen/
+plot_dir: ./datas/plot_data/wnum_mpc8_opp/
 
 # gen: random, opp: crossing
-## optunaを使う時はコメントアウトして下さい。
-eval_states: ./datas/eval_states/8-100-gen.npy
+## optunaを使う時や学習時はコメントアウトして下さい。
+#eval_states: ./datas/eval_states/8-100-gen.npy
 #result_file: ./datas/eval_results/8-100-wnum-gen.json
 
 #eval_states: ./datas/eval_states/8-100-opp.npy

@@ -1,4 +1,5 @@
 from omegaconf import DictConfig
+import copy
 
 
 class BaseConfig(object):
@@ -20,7 +21,7 @@ class Config(object):
     reward.discomfort_dist_front = 0.25
     # discomfort distance for the back half of the robot
     reward.discomfort_dist_back = 0.25
-    reward.discomfort_penalty_factor = 1.5
+    reward.discomfort_penalty_factor = 1.0
     reward.gamma = 0.95  # discount factor for rewards
 
     sim = BaseConfig()
@@ -74,7 +75,7 @@ class Config(object):
     # mpc
     policy_config: DictConfig
 
-    def __dict__(self):
+    def to_dict(self):
         return {
             "orca.neighbor_dist": self.orca.neighbor_dist,
             "orca.safety_space": self.orca.safety_space,
@@ -89,6 +90,16 @@ class Config(object):
         }
 
     def __init__(self, wmpc_config: DictConfig) -> None:
+        self.env = copy.deepcopy(Config.env)
+        self.reward = copy.deepcopy(Config.reward)
+        self.sim = copy.deepcopy(Config.sim)
+        self.humans = copy.deepcopy(Config.humans)
+        self.robot = copy.deepcopy(Config.robot)
+        self.noise = copy.deepcopy(Config.noise)
+        self.action_space = copy.deepcopy(Config.action_space)
+        self.orca = copy.deepcopy(Config.orca)
+        self.sf = copy.deepcopy(Config.sf)
+
         self.policy_config: DictConfig = wmpc_config
 
         self.sim.human_num = wmpc_config.sim.human_num
@@ -102,4 +113,3 @@ class Config(object):
         self.robot.policy = wmpc_config.sim.robot_policy
         if not (self.robot.policy in ["wnum_mpc", "vanilla_mpc", "mean_mpc"]):
             self.action_space.kinematics = "holonomic"
-
