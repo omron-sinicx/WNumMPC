@@ -32,7 +32,7 @@ def eval_policy(dict_config: DictConfig, visualize: bool, network_path: str | No
     # rollout episodes
     episode_num: int = config.env.eval_episodes
     if isinstance(env.robot.policy, WNumMPC) and network_path is not None:
-        with set_exploration_type(ExplorationType.MODE), torch.no_grad():
+        with set_exploration_type(ExplorationType.DETERMINISTIC), torch.no_grad():
             result: dict = trial(env, episode_num=episode_num, print_info=True, visualize=visualize)
     else:
         result: dict = trial(env, episode_num=episode_num, print_info=True, visualize=visualize)
@@ -60,11 +60,9 @@ if __name__ == '__main__':
 
     else:  # WNumMPC or ORCA
         # WNumMPC
-        split_num = 5 if human_num <= 4 else 3   
         mpc_param: str = "rot_real_wnum_mpc_H{}".format(human_num)
-        training_param = "h32" if human_num <= 4 else "h64"
-        #network_path: str = "./models/ww_human_{}/WNumPPO_{}_mean/best.pth".format(human_num, training_param)
-        network_path: str = "./models/ww_human_{}/WNumPPO_{}/best.pth".format(human_num, training_param)
+        training_param = "h128"
+        network_path: str = "./models/ww_human_{}/diff_wheel/WNumPPO_{}/best.pth".format(human_num, training_param)
 
         use_nn: str = "no_use" if network_path is None else "use"
         d_conf: DictConfig = load_wmpc_config(mpc_param_name=mpc_param, training_param=training_param, use_nn=use_nn)

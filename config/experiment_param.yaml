@@ -1,6 +1,6 @@
 sim:
   human_num: 6  # the number of all agents = (human_num+1)
-  robot_policy: "wnum_mpc"  # wnum_mpc / vanilla_mpc / mean_mpc (T-MPC)
+  robot_policy: "vanilla_mpc"  # wnum_mpc / vanilla_mpc / mean_mpc (T-MPC)
   position:
     circle:
       r: 2.0
@@ -13,7 +13,7 @@ sim:
   done_if_all_agents_reached: True  # False if train CADRL
 
 goal_threshold: 1.5
-collision_radius: 0.2
+collision_radius: 0.15 # collision radius in real world
 
 eval_episodes: 100 # episodes for evaluation (30 is set when training)
 plot_trajectory: False
@@ -21,12 +21,10 @@ plot_animation: False
 animation_dir: ./plot_data/animation_normal_angle_cost/
 save_trajectory: False
 trajectory_dir: ./plot_data/animation_sim_normal_margin/
-use_maru: False
+use_maru: True
 use_maru_verbose: False
-#eval_states: ./datas/eval_states/slow-7-100.npy
-#eval_states: ./datas/eval_states/optuna-7-30.npy
-#result_file: tmp.json
-#result_file: ./datas/maru_results/slow-7-100-normal-margin.json
+eval_states: ./datas/eval_states/7-100.npy
+result_file: ./datas/maru_results/vanilla_iros.json
 
 detect_collisions: True
 

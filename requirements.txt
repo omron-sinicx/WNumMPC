@@ -1,6 +1,7 @@
+#torch == 2.3.0
+torch == 2.7.1
 numpy<2.0.0
 pandas == 2.2.2
-torch == 2.3.0
 gym
 tensorflow == 2.16.1
 matplotlib
@@ -11,9 +12,11 @@ hydra-core
 plotly
 optuna
 kaleido
-tensordict == 0.4.0
-torchrl == 0.4.0
+tensordict == 0.8.3
+torchrl == 0.8.1
+# tensordict == 0.4.0
+# torchrl == 0.4.0
 multiprocess
 torchsummary
-pyserial == 3.5
+pyserial
 # Python-RVO2 (pip install git+)

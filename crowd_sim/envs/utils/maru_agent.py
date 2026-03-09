@@ -88,22 +88,20 @@ class MaruAgent(Agent):
         #leftw = self.volt_poly(leftSpeed)
         action_v = action.v / self.time_scale
         action_r = action.r / self.time_scale 
-        if self.targetId == 15:
-            mean_w = (48 + 9.0*action_r**2) * action_v
-            diff_w = (5.2 - 3*action_v) * action_r
-        else:
-            mean_w = (37 + 3.7*action_r**2) * action_v
-            diff_w = (5.2 - 3*action_v) * action_r
+        mean_w = (54 + 14.6*action_r**2 - (4.8 + 4.3*action_r**2)* abs(action_r)) * action_v
+        # 0.75 -> 5.0, 1.5 -> 5.0, 2.25 -> 4.0, 3.0 -> 0.2
+        diff_w = (9.0 + 5.6*action_v) * action_r
+        # 0.5 -> +2.8, 0.4 -> 0.0, 0.2 -> 0.0
         #mean_w = (43 + 2.0*action_r**2 + 60 * (0.6-abs(action_v))) * action_v
         #diff_w = (6.2 - 2.0*action_v) * action_r
         #print(f"targetId={self.targetId}, action_v={action_v}, action_r={action_r}, mean_w={mean_w}, diff_w={diff_w}")
         rightw = mean_w + diff_w
         leftw = mean_w - diff_w
-        self.driver.writeMotorSpeed(self.targetId, rightw, leftw)
+        self.driver.writeMotorSpeed(self.targetId, rightw, leftw, flag = 1)
         self.v = action.v
         self.vx = action.v * np.cos(self.theta)
         self.vy = action.v * np.sin(self.theta)
 
     def stop(self):
-        self.driver.writeMotorSpeed(self.targetId, 0, 0)
+        self.driver.writeMotorSpeed(self.targetId, 0, 0, flag = 1)
         self.v = self.vx = self.vy = 0
