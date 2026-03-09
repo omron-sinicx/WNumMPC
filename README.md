@@ -1,7 +1,7 @@
 # Winding-Number-Aware Navigation 
 
-This repository contains the code for the paper "Winding-Number-Aware Navigation" by ... .
-Conf2024, [project_page], [paper].
+This repository contains the code for the paper "[Symmetry-Breaking in Multi-Agent Navigation: Winding Number-Aware MPC with a Learned Topological Strategy](https://arxiv.org/abs/2511.15239)".
+
 
 The framework of our codes is based on the work ([sriyash421/Pred2Nav](https://github.com/sriyash421/Pred2Nav)),
 and the codes for CADRL are based on the work ([vita-epfl/CrowdNav](https://github.com/vita-epfl/CrowdNav)). 
